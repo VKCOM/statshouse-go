@@ -1,0 +1,4 @@
+# Treat all files in the repo as binary, with no git magic updating
+# line endings. This produces predictable results in different environments.
+
+* -text
