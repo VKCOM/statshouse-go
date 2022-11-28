@@ -1,0 +1,24 @@
+on:
+  pull_request:
+jobs:
+  ci-go:
+    strategy:
+      matrix:
+        go: ['1.17', '1.18', '1.19']
+        os: ['ubuntu-latest', 'windows-latest', 'macOS-latest']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-go@v3
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+      - uses: golangci/golangci-lint-action@v3
+        with:
+          args: --timeout=10m --disable-all -E goimports
+      - uses: dominikh/staticcheck-action@v1.2.0
+        with:
+          install-go: false
+      - run: go test -v ./...
