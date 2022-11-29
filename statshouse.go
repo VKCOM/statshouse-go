@@ -21,7 +21,7 @@ import (
 const (
 	DefaultStatsHouseAddr = "127.0.0.1:13337"
 	defaultSendPeriod     = 1 * time.Second
-	maxPayloadSize        = 1232 // IPv6 mandated minimum MTU size of 1280 (minus 40 byte IPv6 header and 8 byte UDP header)
+	maxPayloadSize        = 1232 // IPv6  mandated minimum MTU size of 1280 (minus 40 byte IPv6 header and 8 byte UDP header)
 	tlInt32Size           = 4
 	tlInt64Size           = 8
 	tlFloat64Size         = 8
