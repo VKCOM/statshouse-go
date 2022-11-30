@@ -31,7 +31,7 @@ const (
 	valueFieldsMask       = uint32(1 << 1)
 	uniqueFieldsMask      = uint32(1 << 2)
 	tsFieldsMask          = uint32(1 << 4)
-	batcnHeaderLen        = 3 * tlInt32Size // tag, fields_mask, # of batches
+	batchHeaderLen        = 3 * tlInt32Size // tag, fields_mask, # of batches
 	maxTags               = 16
 )
 
@@ -114,7 +114,7 @@ func NewRegistry(logf LoggerFunc, statsHouseAddr string, env string) *Registry {
 	r := &Registry{
 		logf:         logf,
 		addr:         statsHouseAddr,
-		packetBuf:    make([]byte, batcnHeaderLen, maxPayloadSize), // can grow larger than maxPayloadSize if writing huge header
+		packetBuf:    make([]byte, batchHeaderLen, maxPayloadSize), // can grow larger than maxPayloadSize if writing huge header
 		close:        make(chan chan struct{}),
 		cur:          &Metric{},
 		w:            map[metricKey]*Metric{},
@@ -441,7 +441,7 @@ func (r *Registry) flush() {
 	binary.LittleEndian.PutUint32(r.packetBuf[tlInt32Size:], 0) // fields_mask
 	binary.LittleEndian.PutUint32(r.packetBuf[2*tlInt32Size:], uint32(r.batchCount))
 	data := r.packetBuf
-	r.packetBuf = r.packetBuf[:batcnHeaderLen]
+	r.packetBuf = r.packetBuf[:batchHeaderLen]
 	r.batchCount = 0
 
 	r.confMu.Lock()
@@ -502,7 +502,7 @@ func (r *Registry) writeHeader(k *metricKeyTransport, skey string, counter float
 		r.batchCount++
 		return left
 	}
-	if wasLen != batcnHeaderLen {
+	if wasLen != batchHeaderLen {
 		r.packetBuf = r.packetBuf[:wasLen]
 		r.flush()
 		r.writeHeaderImpl(k, skey, counter, tsUnixSec, fieldsMask)
