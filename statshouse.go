@@ -31,7 +31,6 @@ const (
 	valueFieldsMask       = uint32(1 << 1)
 	uniqueFieldsMask      = uint32(1 << 2)
 	tsFieldsMask          = uint32(1 << 4)
-	newSemanticFieldsMask = uint32(1 << 31) // this lib uses no sampling, so can claim support of new semantic
 	batcnHeaderLen        = 3 * tlInt32Size // tag, fields_mask, # of batches
 	maxTags               = 16
 )
@@ -387,11 +386,11 @@ func (r *Registry) send() {
 }
 
 func (r *Registry) sendCounter(k *metricKeyTransport, skey string, counter float64, tsUnixSec uint32) {
-	_ = r.writeHeader(k, skey, counter, tsUnixSec, counterFieldsMask|newSemanticFieldsMask, 0)
+	_ = r.writeHeader(k, skey, counter, tsUnixSec, counterFieldsMask, 0)
 }
 
 func (r *Registry) sendUniques(k *metricKeyTransport, skey string, counter float64, tsUnixSec uint32, values []int64) {
-	fieldsMask := uniqueFieldsMask | newSemanticFieldsMask
+	fieldsMask := uniqueFieldsMask
 	if counter != 0 && counter != float64(len(values)) {
 		fieldsMask |= counterFieldsMask
 	}
@@ -413,7 +412,7 @@ func (r *Registry) sendUniques(k *metricKeyTransport, skey string, counter float
 }
 
 func (r *Registry) sendValues(k *metricKeyTransport, skey string, counter float64, tsUnixSec uint32, values []float64) {
-	fieldsMask := valueFieldsMask | newSemanticFieldsMask
+	fieldsMask := valueFieldsMask
 	if counter != 0 && counter != float64(len(values)) {
 		fieldsMask |= counterFieldsMask
 	}
