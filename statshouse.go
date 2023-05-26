@@ -20,19 +20,20 @@ import (
 
 const (
 	DefaultStatsHouseAddr = "127.0.0.1:13337"
-	defaultSendPeriod     = 1 * time.Second
-	errorReportingPeriod  = time.Minute
-	maxPayloadSize        = 1232 // IPv6 mandated minimum MTU size of 1280 (minus 40 byte IPv6 header and 8 byte UDP header)
-	tlInt32Size           = 4
-	tlInt64Size           = 8
-	tlFloat64Size         = 8
-	metricsBatchTag       = 0x56580239
-	counterFieldsMask     = uint32(1 << 0)
-	valueFieldsMask       = uint32(1 << 1)
-	uniqueFieldsMask      = uint32(1 << 2)
-	tsFieldsMask          = uint32(1 << 4)
-	batchHeaderLen        = 3 * tlInt32Size // tag, fields_mask, # of batches
-	maxTags               = 16
+
+	defaultSendPeriod    = 1 * time.Second
+	errorReportingPeriod = time.Minute
+	maxPayloadSize       = 1232 // IPv6 mandated minimum MTU size of 1280 (minus 40 byte IPv6 header and 8 byte UDP header)
+	tlInt32Size          = 4
+	tlInt64Size          = 8
+	tlFloat64Size        = 8
+	metricsBatchTag      = 0x56580239
+	counterFieldsMask    = uint32(1 << 0)
+	valueFieldsMask      = uint32(1 << 1)
+	uniqueFieldsMask     = uint32(1 << 2)
+	tsFieldsMask         = uint32(1 << 4)
+	batchHeaderLen       = 3 * tlInt32Size // tag, fields_mask, # of batches
+	maxTags              = 16
 )
 
 var (
@@ -41,76 +42,48 @@ var (
 
 type LoggerFunc func(format string, args ...interface{})
 
-// Configure is expected to be called once on app startup.
-// Order of Configure/AccessMetricRaw is not important, so AccessMetricRaw can be assigned to global var, then Configure called from main().
-// Pass empty address to configure Registry to silently discard all data (like /dev/null).
-// If Env is empty (not specified) in call to AccessMetricRaw, env will be used instead.
-func Configure(logf LoggerFunc, statsHouseAddr string, env string) {
-	globalRegistry.configure(logf, statsHouseAddr, env)
+// Configure is expected to be called once during app startup to configure the global [Registry].
+// Specifying empty StatsHouse address will make the registry silently discard all metrics.
+func Configure(logf LoggerFunc, statsHouseAddr string, defaultEnv string) {
+	globalRegistry.configure(logf, statsHouseAddr, defaultEnv)
 }
 
-// Close registry on app exit, otherwise you risk losing some statistics, often related to reason of app exit
-// after Close() no more data will be sent
+// Close calls [*Registry.Close] on the global [Registry].
+// Make sure to call Close during app exit to avoid losing the last batch of metrics.
 func Close() error {
 	return globalRegistry.Close()
 }
 
-// AccessMetricRaw is recommended to be used via helper functions, not directly. Instead of
-//
-//	statshouse.AccessMetricRaw("packet_size", statshouse.RawTags{Tag1: "ok"}).Value(float64(len(pkg)))
-//
-// it is better to create a helper function that encapsulates raw access for your metric:
-//
-//	func RecordPacketSize(ok bool, size int) {
-//	    status := "fail"
-//	    if ok {
-//	        status = "ok"
-//	    }
-//	    statshouse.AccessMetricRaw("packet_size", statshouse.RawTags{Tag1: status}).Value(float64(size))
-//	}
-//
-//	RecordPacketSize(true, len(pkg))
-//
-// AccessMetricRaw locks mutex for very short time (map access). Metric functions also lock mutex for very short time.
-// so writing statistics cannot block your goroutines.
-//
-// result of AccessMetricRaw can be saved if map access is too slow for your code, and even can be
-// assigned to global variable
-//
-//	var countPacketOK = statshouse.AccessMetricRaw("foo", statshouse.RawTags{Tag1: "ok"})
-//
-// so that when packet arrives
-//
-//	countPacketOK.Count(1)
-//
-// will be extremely fast
+// AccessMetricRaw calls [*Registry.AccessMetricRaw] on the global [Registry].
+// It is valid to call AccessMetricRaw before [Configure].
 func AccessMetricRaw(metric string, tags RawTags) *Metric {
 	return globalRegistry.AccessMetricRaw(metric, tags)
 }
 
-// AccessMetric we recommend to use AccessMetricRaw, but if you need to send custom named tags, use this
-// usage example:
-//
-//	statshouse.AccessMetric("packet_size", statshouse.Tags{{"status", "ok"}, {"code", "2"}}).Value(10e3)
+// AccessMetric calls [*Registry.AccessMetric] on the global [Registry].
+// It is valid to call AccessMetric before [Configure].
 func AccessMetric(metric string, tags Tags) *Metric {
 	return globalRegistry.AccessMetric(metric, tags)
 }
 
-// StartRegularMeasurement will call f once per collection interval with no gaps or drift,
-// until StopRegularMeasurement is called with the same ID.
+// StartRegularMeasurement calls [*Registry.StartRegularMeasurement] on the global [Registry].
+// It is valid to call StartRegularMeasurement before [Configure].
 func StartRegularMeasurement(f func(*Registry)) (id int) {
 	return globalRegistry.StartRegularMeasurement(f)
 }
 
-// StopRegularMeasurement cancels StartRegularMeasurement with specified id
+// StopRegularMeasurement calls [*Registry.StopRegularMeasurement] on the global [Registry].
+// It is valid to call StopRegularMeasurement before [Configure].
 func StopRegularMeasurement(id int) {
 	globalRegistry.StopRegularMeasurement(id)
 }
 
-// Use only if you are sending metrics to 2 or more statshouses. Otherwise, simply use statshouse.Configure
-// Do not forget to Close registry on app exit, otherwise you risk losing some data, often related to reason of app exit
-// Pass empty address to configure Registry to silently discard all data (like /dev/null).
-func NewRegistry(logf LoggerFunc, statsHouseAddr string, env string) *Registry {
+// NewRegistry creates a new [Registry] to send metrics. Use NewRegistry only if you are
+// sending metrics to two or more StatsHouse clusters. Otherwise, simply [Configure]
+// the default global [Registry].
+//
+// Specifying empty StatsHouse address will make the registry silently discard all metrics.
+func NewRegistry(logf LoggerFunc, statsHouseAddr string, defaultEnv string) *Registry {
 	r := &Registry{
 		logf:         logf,
 		addr:         statsHouseAddr,
@@ -119,7 +92,7 @@ func NewRegistry(logf LoggerFunc, statsHouseAddr string, env string) *Registry {
 		cur:          &Metric{},
 		w:            map[metricKey]*Metric{},
 		wn:           map[metricKeyNamed]*Metric{},
-		env:          env,
+		env:          defaultEnv,
 		regularFuncs: map[int]func(*Registry){},
 	}
 	go r.run()
@@ -138,9 +111,10 @@ type metricKeyNamed struct {
 	tags internalTags
 }
 
+// Tags are used to call [*Registry.AccessMetric].
 type Tags [][2]string
 
-// RawTags should not be used directly; see AccessMetricRaw docs for an example of proper usage.
+// RawTags are used to call [*Registry.AccessMetricRaw].
 type RawTags struct {
 	Env, Tag1, Tag2, Tag3, Tag4, Tag5, Tag6, Tag7, Tag8, Tag9, Tag10, Tag11, Tag12, Tag13, Tag14, Tag15 string
 }
@@ -155,6 +129,7 @@ type metricKeyValueNamed struct {
 	v *Metric
 }
 
+// Registry manages metric aggregation and transport to a StatsHouse agent.
 type Registry struct {
 	confMu sync.Mutex
 	logf   LoggerFunc
@@ -181,13 +156,15 @@ type Registry struct {
 	nextRegularID  int
 }
 
+// SetEnv changes the default environment associated with [Registry].
 func (r *Registry) SetEnv(env string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.env = env
 }
 
-// see statshouse.Close for documentation
+// Close the [Registry] and flush unsent metrics to the StatsHouse agent.
+// No data will be sent after Close has returned.
 func (r *Registry) Close() error {
 	r.closeOnce.Do(func() {
 		ch := make(chan struct{})
@@ -204,7 +181,8 @@ func (r *Registry) Close() error {
 	return r.closeErr
 }
 
-// see statshouse.StartRegularMeasurement for documentation
+// StartRegularMeasurement will call f once per collection interval with no gaps or drift,
+// until StopRegularMeasurement is called with the same ID.
 func (r *Registry) StartRegularMeasurement(f func(*Registry)) (id int) {
 	r.regularFuncsMu.Lock()
 	defer r.regularFuncsMu.Unlock()
@@ -213,7 +191,7 @@ func (r *Registry) StartRegularMeasurement(f func(*Registry)) (id int) {
 	return r.nextRegularID
 }
 
-// see statshouse.StopRegularMeasurement for documentation
+// StopRegularMeasurement cancels StartRegularMeasurement with the specified ID.
 func (r *Registry) StopRegularMeasurement(id int) {
 	r.regularFuncsMu.Lock()
 	defer r.regularFuncsMu.Unlock()
@@ -522,7 +500,28 @@ func (r *Registry) writeTag(tagName string, tagValue string) {
 	r.packetBuf = basictl.StringWriteTruncated(r.packetBuf, tagValue)
 }
 
-// see statshouse.AccessMetricRaw for documentation
+// AccessMetricRaw is the preferred way to access [Metric] to record observations.
+// AccessMetricRaw calls should be encapsulated in helper functions. Direct calls like
+//
+//	statshouse.AccessMetricRaw("packet_size", statshouse.RawTags{Tag1: "ok"}).Value(float64(len(pkg)))
+//
+// should be replaced with calls via higher-level helper functions:
+//
+//	RecordPacketSize(true, len(pkg))
+//
+//	func RecordPacketSize(ok bool, size int) {
+//	    status := "fail"
+//	    if ok {
+//	        status = "ok"
+//	    }
+//	    statshouse.AccessMetricRaw("packet_size", statshouse.RawTags{Tag1: status}).Value(float64(size))
+//	}
+//
+// As an optimization, it is possible to save the result of AccessMetricRaw for later use:
+//
+//	var countPacketOK = statshouse.AccessMetricRaw("foo", statshouse.RawTags{Tag1: "ok"})
+//
+//	countPacketOK.Count(1)  // lowest overhead possible
 func (r *Registry) AccessMetricRaw(metric string, tags RawTags) *Metric {
 	// We must do absolute minimum of work here
 	k := metricKey{name: metric, tags: tags}
@@ -544,10 +543,11 @@ func (r *Registry) AccessMetricRaw(metric string, tags RawTags) *Metric {
 	return e
 }
 
-func (r *Registry) AccessMetric(metric string, tagsList Tags) *Metric {
+// AccessMetric is similar to [*Registry.AccessMetricRaw] but slightly slower, and allows to specify tags by name.
+func (r *Registry) AccessMetric(metric string, tags Tags) *Metric {
 	// We must do absolute minimum of work here
 	k := metricKeyNamed{name: metric}
-	copy(k.tags[:], tagsList)
+	copy(k.tags[:], tags)
 
 	r.mu.RLock()
 	e, ok := r.wn[k]
@@ -567,7 +567,8 @@ func (r *Registry) AccessMetric(metric string, tagsList Tags) *Metric {
 	return e
 }
 
-// see AccessMetricRaw docs for documentation
+// Metric pointer is obtained via [*Registry.AccessMetricRaw] or [*Registry.AccessMetric]
+// and is used to record attributes of observed events.
 type Metric struct {
 	// Place atomics first to ensure proper alignment, see https://pkg.go.dev/sync/atomic#pkg-note-BUG
 	atomicCount uint64
@@ -578,6 +579,7 @@ type Metric struct {
 	stop   []string
 }
 
+// Count records the number of events or observations.
 func (m *Metric) Count(n float64) {
 	c := atomicLoadFloat64(&m.atomicCount)
 	for !atomicCASFloat64(&m.atomicCount, c, c+n) {
@@ -585,36 +587,42 @@ func (m *Metric) Count(n float64) {
 	}
 }
 
+// Value records the observed value for distribution estimation.
 func (m *Metric) Value(value float64) {
 	m.mu.Lock()
 	m.value = append(m.value, value)
 	m.mu.Unlock()
 }
 
+// Values records the observed values for distribution estimation.
 func (m *Metric) Values(values []float64) {
 	m.mu.Lock()
 	m.value = append(m.value, values...)
 	m.mu.Unlock()
 }
 
+// Unique records the observed value for cardinality estimation.
 func (m *Metric) Unique(value int64) {
 	m.mu.Lock()
 	m.unique = append(m.unique, value)
 	m.mu.Unlock()
 }
 
+// Uniques records the observed values for cardinality estimation.
 func (m *Metric) Uniques(values []int64) {
 	m.mu.Lock()
 	m.unique = append(m.unique, values...)
 	m.mu.Unlock()
 }
 
+// StringTop records the observed value for popularity estimation.
 func (m *Metric) StringTop(value string) {
 	m.mu.Lock()
 	m.stop = append(m.stop, value)
 	m.mu.Unlock()
 }
 
+// StringsTop records the observed values for popularity estimation.
 func (m *Metric) StringsTop(values []string) {
 	m.mu.Lock()
 	m.stop = append(m.stop, values...)
