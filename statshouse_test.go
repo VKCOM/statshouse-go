@@ -14,7 +14,7 @@ import (
 )
 
 func TestCountRace(t *testing.T) {
-	r := statshouse.NewRegistry(t.Logf, "" /* avoid sending anything */, "")
+	c := statshouse.NewClient(t.Logf, "" /* avoid sending anything */, "")
 
 	var wg sync.WaitGroup
 	for i := 0; i < 1000; i++ {
@@ -22,7 +22,7 @@ func TestCountRace(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 1000; j++ {
-				r.AccessMetricRaw("test_stat", statshouse.RawTags{Tag1: "hello", Tag2: "world"}).Count(float64(j))
+				c.AccessMetricRaw("test_stat", statshouse.RawTags{Tag1: "hello", Tag2: "world"}).Count(float64(j))
 			}
 		}()
 	}
@@ -30,17 +30,17 @@ func TestCountRace(t *testing.T) {
 }
 
 func BenchmarkValue2(b *testing.B) {
-	r := statshouse.NewRegistry(b.Logf, "" /* avoid sending anything */, "")
+	c := statshouse.NewClient(b.Logf, "" /* avoid sending anything */, "")
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		r.AccessMetricRaw("test_stat", statshouse.RawTags{Tag1: "hello", Tag2: "world"}).Value(float64(i))
+		c.AccessMetricRaw("test_stat", statshouse.RawTags{Tag1: "hello", Tag2: "world"}).Value(float64(i))
 	}
 }
 
 func BenchmarkRawValue(b *testing.B) {
-	r := statshouse.NewRegistry(b.Logf, "" /* avoid sending anything */, "")
-	s := r.AccessMetricRaw("test_stat", statshouse.RawTags{Tag1: "hello", Tag2: "world"})
+	c := statshouse.NewClient(b.Logf, "" /* avoid sending anything */, "")
+	s := c.AccessMetricRaw("test_stat", statshouse.RawTags{Tag1: "hello", Tag2: "world"})
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
@@ -49,17 +49,17 @@ func BenchmarkRawValue(b *testing.B) {
 }
 
 func BenchmarkCount4(b *testing.B) {
-	r := statshouse.NewRegistry(b.Logf, "" /* avoid sending anything */, "")
+	c := statshouse.NewClient(b.Logf, "" /* avoid sending anything */, "")
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		r.AccessMetricRaw("test_stat", statshouse.RawTags{Tag1: "hello", Tag2: "brave", Tag3: "new", Tag4: "world"}).Count(float64(i))
+		c.AccessMetricRaw("test_stat", statshouse.RawTags{Tag1: "hello", Tag2: "brave", Tag3: "new", Tag4: "world"}).Count(float64(i))
 	}
 }
 
 func BenchmarkRawCount(b *testing.B) {
-	r := statshouse.NewRegistry(b.Logf, "" /* avoid sending anything */, "")
-	s := r.AccessMetricRaw("test_stat", statshouse.RawTags{Tag1: "hello", Tag2: "brave", Tag3: "new", Tag4: "world"})
+	c := statshouse.NewClient(b.Logf, "" /* avoid sending anything */, "")
+	s := c.AccessMetricRaw("test_stat", statshouse.RawTags{Tag1: "hello", Tag2: "brave", Tag3: "new", Tag4: "world"})
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
@@ -68,17 +68,17 @@ func BenchmarkRawCount(b *testing.B) {
 }
 
 func BenchmarkLabeledValue2(b *testing.B) {
-	r := statshouse.NewRegistry(b.Logf, "" /* avoid sending anything */, "")
+	c := statshouse.NewClient(b.Logf, "" /* avoid sending anything */, "")
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		r.AccessMetric("test_stat", statshouse.Tags{{"hello", "world"}, {"world", "hello"}}).Value(float64(i))
+		c.AccessMetric("test_stat", statshouse.Tags{{"hello", "world"}, {"world", "hello"}}).Value(float64(i))
 	}
 }
 
 func BenchmarkRawLabeledValue(b *testing.B) {
-	r := statshouse.NewRegistry(b.Logf, "" /* avoid sending anything */, "")
-	s := r.AccessMetric("test_stat", statshouse.Tags{{"hello", "world"}, {"world", "hello"}})
+	c := statshouse.NewClient(b.Logf, "" /* avoid sending anything */, "")
+	s := c.AccessMetric("test_stat", statshouse.Tags{{"hello", "world"}, {"world", "hello"}})
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
@@ -87,17 +87,17 @@ func BenchmarkRawLabeledValue(b *testing.B) {
 }
 
 func BenchmarkLabeledCount4(b *testing.B) {
-	r := statshouse.NewRegistry(b.Logf, "" /* avoid sending anything */, "")
+	c := statshouse.NewClient(b.Logf, "" /* avoid sending anything */, "")
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		r.AccessMetric("test_stat", statshouse.Tags{{"hello", "world"}, {"world", "hello"}, {"hello1", "world"}, {"world1", "hello"}}).Count(float64(i))
+		c.AccessMetric("test_stat", statshouse.Tags{{"hello", "world"}, {"world", "hello"}, {"hello1", "world"}, {"world1", "hello"}}).Count(float64(i))
 	}
 }
 
 func BenchmarkRawLabeledCount(b *testing.B) {
-	r := statshouse.NewRegistry(b.Logf, "" /* avoid sending anything */, "")
-	s := r.AccessMetric("test_stat", statshouse.Tags{{"hello", "world"}, {"world", "hello"}, {"hello1", "world"}, {"world1", "hello"}})
+	c := statshouse.NewClient(b.Logf, "" /* avoid sending anything */, "")
+	s := c.AccessMetric("test_stat", statshouse.Tags{{"hello", "world"}, {"world", "hello"}, {"hello1", "world"}, {"world1", "hello"}})
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
