@@ -56,16 +56,16 @@ func Close() error {
 	return globalClient.Close()
 }
 
-// AccessMetricRaw calls [*Client.AccessMetricRaw] on the global [Client].
-// It is valid to call AccessMetricRaw before [Configure].
-func AccessMetricRaw(metric string, tags RawTags) *Metric {
-	return globalClient.AccessMetricRaw(metric, tags)
+// GetMetric calls [*Client.GetMetric] on the global [Client].
+// It is valid to call GetMetric before [Configure].
+func GetMetric(metric string, tags Tags) *Metric {
+	return globalClient.GetMetric(metric, tags)
 }
 
-// AccessMetric calls [*Client.AccessMetric] on the global [Client].
-// It is valid to call AccessMetric before [Configure].
-func AccessMetric(metric string, tags Tags) *Metric {
-	return globalClient.AccessMetric(metric, tags)
+// GetMetricNamed calls [*Client.GetMetricNamed] on the global [Client].
+// It is valid to call GetMetricNamed before [Configure].
+func GetMetricNamed(metric string, tags NamedTags) *Metric {
+	return globalClient.GetMetricNamed(metric, tags)
 }
 
 // StartRegularMeasurement calls [*Client.StartRegularMeasurement] on the global [Client].
@@ -103,7 +103,7 @@ func NewClient(logf LoggerFunc, statsHouseAddr string, defaultEnv string) *Clien
 
 type metricKey struct {
 	name string
-	tags RawTags
+	tags Tags
 }
 
 type internalTags [maxTags][2]string
@@ -113,11 +113,11 @@ type metricKeyNamed struct {
 	tags internalTags
 }
 
-// Tags are used to call [*Client.AccessMetric].
-type Tags [][2]string
+// NamedTags are used to call [*Client.GetMetricNamed].
+type NamedTags [][2]string
 
-// RawTags are used to call [*Client.AccessMetricRaw].
-type RawTags [maxTags]string
+// Tags are used to call [*Client.GetMetric].
+type Tags [maxTags]string
 
 type metricKeyValue struct {
 	k metricKey
@@ -487,10 +487,10 @@ func (c *Client) writeTag(tagName string, tagValue string) {
 	c.packetBuf = basictl.StringWriteTruncated(c.packetBuf, tagValue)
 }
 
-// AccessMetricRaw is the preferred way to access [Metric] to record observations.
-// AccessMetricRaw calls should be encapsulated in helper functions. Direct calls like
+// GetMetric is the preferred way to access [Metric] to record observations.
+// GetMetric calls should be encapsulated in helper functions. Direct calls like
 //
-//	statshouse.AccessMetricRaw("packet_size", statshouse.RawTags{1: "ok"}).Value(float64(len(pkg)))
+//	statshouse.GetMetric("packet_size", statshouse.Tags{1: "ok"}).Value(float64(len(pkg)))
 //
 // should be replaced with calls via higher-level helper functions:
 //
@@ -501,15 +501,15 @@ func (c *Client) writeTag(tagName string, tagValue string) {
 //	    if ok {
 //	        status = "ok"
 //	    }
-//	    statshouse.AccessMetricRaw("packet_size", statshouse.RawTags{1: status}).Value(float64(size))
+//	    statshouse.GetMetric("packet_size", statshouse.Tags{1: status}).Value(float64(size))
 //	}
 //
-// As an optimization, it is possible to save the result of AccessMetricRaw for later use:
+// As an optimization, it is possible to save the result of GetMetric for later use:
 //
-//	var countPacketOK = statshouse.AccessMetricRaw("foo", statshouse.RawTags{1: "ok"})
+//	var countPacketOK = statshouse.GetMetric("foo", statshouse.Tags{1: "ok"})
 //
 //	countPacketOK.Count(1)  // lowest overhead possible
-func (c *Client) AccessMetricRaw(metric string, tags RawTags) *Metric {
+func (c *Client) GetMetric(metric string, tags Tags) *Metric {
 	// We must do absolute minimum of work here
 	k := metricKey{name: metric, tags: tags}
 	c.mu.RLock()
@@ -530,8 +530,8 @@ func (c *Client) AccessMetricRaw(metric string, tags RawTags) *Metric {
 	return e
 }
 
-// AccessMetric is similar to [*Client.AccessMetricRaw] but slightly slower, and allows to specify tags by name.
-func (c *Client) AccessMetric(metric string, tags Tags) *Metric {
+// GetMetricNamed is similar to [*Client.GetMetric] but slightly slower, and allows to specify tags by name.
+func (c *Client) GetMetricNamed(metric string, tags NamedTags) *Metric {
 	// We must do absolute minimum of work here
 	k := metricKeyNamed{name: metric}
 	copy(k.tags[:], tags)
@@ -554,7 +554,7 @@ func (c *Client) AccessMetric(metric string, tags Tags) *Metric {
 	return e
 }
 
-// Metric pointer is obtained via [*Client.AccessMetricRaw] or [*Client.AccessMetric]
+// Metric pointer is obtained via [*Client.GetMetric] or [*Client.GetMetricNamed]
 // and is used to record attributes of observed events.
 type Metric struct {
 	// Place atomics first to ensure proper alignment, see https://pkg.go.dev/sync/atomic#pkg-note-BUG
