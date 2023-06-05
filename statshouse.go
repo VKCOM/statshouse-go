@@ -37,54 +37,54 @@ const (
 )
 
 var (
-	globalRegistry = NewRegistry(log.Printf, DefaultStatsHouseAddr, "")
+	globalClient = NewClient(log.Printf, DefaultStatsHouseAddr, "")
 )
 
 type LoggerFunc func(format string, args ...interface{})
 
-// Configure is expected to be called once during app startup to configure the global [Registry].
-// Specifying empty StatsHouse address will make the registry silently discard all metrics.
+// Configure is expected to be called once during app startup to configure the global [Client].
+// Specifying empty StatsHouse address will make the client silently discard all metrics.
 func Configure(logf LoggerFunc, statsHouseAddr string, defaultEnv string) {
-	globalRegistry.configure(logf, statsHouseAddr, defaultEnv)
+	globalClient.configure(logf, statsHouseAddr, defaultEnv)
 }
 
-// Close calls [*Registry.Close] on the global [Registry].
+// Close calls [*Client.Close] on the global [Client].
 // Make sure to call Close during app exit to avoid losing the last batch of metrics.
 func Close() error {
-	return globalRegistry.Close()
+	return globalClient.Close()
 }
 
-// AccessMetricRaw calls [*Registry.AccessMetricRaw] on the global [Registry].
+// AccessMetricRaw calls [*Client.AccessMetricRaw] on the global [Client].
 // It is valid to call AccessMetricRaw before [Configure].
 func AccessMetricRaw(metric string, tags RawTags) *Metric {
-	return globalRegistry.AccessMetricRaw(metric, tags)
+	return globalClient.AccessMetricRaw(metric, tags)
 }
 
-// AccessMetric calls [*Registry.AccessMetric] on the global [Registry].
+// AccessMetric calls [*Client.AccessMetric] on the global [Client].
 // It is valid to call AccessMetric before [Configure].
 func AccessMetric(metric string, tags Tags) *Metric {
-	return globalRegistry.AccessMetric(metric, tags)
+	return globalClient.AccessMetric(metric, tags)
 }
 
-// StartRegularMeasurement calls [*Registry.StartRegularMeasurement] on the global [Registry].
+// StartRegularMeasurement calls [*Client.StartRegularMeasurement] on the global [Client].
 // It is valid to call StartRegularMeasurement before [Configure].
-func StartRegularMeasurement(f func(*Registry)) (id int) {
-	return globalRegistry.StartRegularMeasurement(f)
+func StartRegularMeasurement(f func(*Client)) (id int) {
+	return globalClient.StartRegularMeasurement(f)
 }
 
-// StopRegularMeasurement calls [*Registry.StopRegularMeasurement] on the global [Registry].
+// StopRegularMeasurement calls [*Client.StopRegularMeasurement] on the global [Client].
 // It is valid to call StopRegularMeasurement before [Configure].
 func StopRegularMeasurement(id int) {
-	globalRegistry.StopRegularMeasurement(id)
+	globalClient.StopRegularMeasurement(id)
 }
 
-// NewRegistry creates a new [Registry] to send metrics. Use NewRegistry only if you are
+// NewClient creates a new [Client] to send metrics. Use NewClient only if you are
 // sending metrics to two or more StatsHouse clusters. Otherwise, simply [Configure]
-// the default global [Registry].
+// the default global [Client].
 //
-// Specifying empty StatsHouse address will make the registry silently discard all metrics.
-func NewRegistry(logf LoggerFunc, statsHouseAddr string, defaultEnv string) *Registry {
-	r := &Registry{
+// Specifying empty StatsHouse address will make the client silently discard all metrics.
+func NewClient(logf LoggerFunc, statsHouseAddr string, defaultEnv string) *Client {
+	c := &Client{
 		logf:         logf,
 		addr:         statsHouseAddr,
 		packetBuf:    make([]byte, batchHeaderLen, maxPayloadSize), // can grow larger than maxPayloadSize if writing huge header
@@ -93,10 +93,10 @@ func NewRegistry(logf LoggerFunc, statsHouseAddr string, defaultEnv string) *Reg
 		w:            map[metricKey]*Metric{},
 		wn:           map[metricKeyNamed]*Metric{},
 		env:          defaultEnv,
-		regularFuncs: map[int]func(*Registry){},
+		regularFuncs: map[int]func(*Client){},
 	}
-	go r.run()
-	return r
+	go c.run()
+	return c
 }
 
 type metricKey struct {
@@ -111,10 +111,10 @@ type metricKeyNamed struct {
 	tags internalTags
 }
 
-// Tags are used to call [*Registry.AccessMetric].
+// Tags are used to call [*Client.AccessMetric].
 type Tags [][2]string
 
-// RawTags are used to call [*Registry.AccessMetricRaw].
+// RawTags are used to call [*Client.AccessMetricRaw].
 type RawTags struct {
 	Env, Tag1, Tag2, Tag3, Tag4, Tag5, Tag6, Tag7, Tag8, Tag9, Tag10, Tag11, Tag12, Tag13, Tag14, Tag15 string
 }
@@ -129,8 +129,8 @@ type metricKeyValueNamed struct {
 	v *Metric
 }
 
-// Registry manages metric aggregation and transport to a StatsHouse agent.
-type Registry struct {
+// Client manages metric aggregation and transport to a StatsHouse agent.
+type Client struct {
 	confMu sync.Mutex
 	logf   LoggerFunc
 	addr   string
@@ -152,139 +152,139 @@ type Registry struct {
 	rn             []metricKeyValueNamed
 	env            string // if set, will be put into key0/env
 	regularFuncsMu sync.Mutex
-	regularFuncs   map[int]func(*Registry)
+	regularFuncs   map[int]func(*Client)
 	nextRegularID  int
 }
 
-// SetEnv changes the default environment associated with [Registry].
-func (r *Registry) SetEnv(env string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.env = env
+// SetEnv changes the default environment associated with [Client].
+func (c *Client) SetEnv(env string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.env = env
 }
 
-// Close the [Registry] and flush unsent metrics to the StatsHouse agent.
+// Close the [Client] and flush unsent metrics to the StatsHouse agent.
 // No data will be sent after Close has returned.
-func (r *Registry) Close() error {
-	r.closeOnce.Do(func() {
+func (c *Client) Close() error {
+	c.closeOnce.Do(func() {
 		ch := make(chan struct{})
-		r.close <- ch
+		c.close <- ch
 		<-ch
 
-		r.confMu.Lock()
-		defer r.confMu.Unlock()
+		c.confMu.Lock()
+		defer c.confMu.Unlock()
 
-		if r.conn != nil {
-			r.closeErr = r.conn.Close()
+		if c.conn != nil {
+			c.closeErr = c.conn.Close()
 		}
 	})
-	return r.closeErr
+	return c.closeErr
 }
 
 // StartRegularMeasurement will call f once per collection interval with no gaps or drift,
 // until StopRegularMeasurement is called with the same ID.
-func (r *Registry) StartRegularMeasurement(f func(*Registry)) (id int) {
-	r.regularFuncsMu.Lock()
-	defer r.regularFuncsMu.Unlock()
-	r.nextRegularID++
-	r.regularFuncs[r.nextRegularID] = f
-	return r.nextRegularID
+func (c *Client) StartRegularMeasurement(f func(*Client)) (id int) {
+	c.regularFuncsMu.Lock()
+	defer c.regularFuncsMu.Unlock()
+	c.nextRegularID++
+	c.regularFuncs[c.nextRegularID] = f
+	return c.nextRegularID
 }
 
 // StopRegularMeasurement cancels StartRegularMeasurement with the specified ID.
-func (r *Registry) StopRegularMeasurement(id int) {
-	r.regularFuncsMu.Lock()
-	defer r.regularFuncsMu.Unlock()
-	delete(r.regularFuncs, id)
+func (c *Client) StopRegularMeasurement(id int) {
+	c.regularFuncsMu.Lock()
+	defer c.regularFuncsMu.Unlock()
+	delete(c.regularFuncs, id)
 }
 
-func (r *Registry) callRegularFuncs(regularCache []func(*Registry)) []func(*Registry) {
-	r.regularFuncsMu.Lock()
-	for _, f := range r.regularFuncs { // TODO - call in order of registration. Use RB-tree when available
+func (c *Client) callRegularFuncs(regularCache []func(*Client)) []func(*Client) {
+	c.regularFuncsMu.Lock()
+	for _, f := range c.regularFuncs { // TODO - call in order of registration. Use RB-tree when available
 		regularCache = append(regularCache, f)
 	}
-	r.regularFuncsMu.Unlock()
+	c.regularFuncsMu.Unlock()
 	defer func() {
 		if p := recover(); p != nil {
-			r.getLog()("[statshouse] panic inside regular measurement function, ignoring: %v", p)
+			c.getLog()("[statshouse] panic inside regular measurement function, ignoring: %v", p)
 		}
 	}()
 	for _, f := range regularCache { // called without locking to prevent deadlock
-		f(r)
+		f(c)
 	}
 	return regularCache
 }
 
-func (r *Registry) configure(logf LoggerFunc, statsHouseAddr string, env string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.env = env
+func (c *Client) configure(logf LoggerFunc, statsHouseAddr string, env string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.env = env
 
-	r.confMu.Lock()
-	defer r.confMu.Unlock()
+	c.confMu.Lock()
+	defer c.confMu.Unlock()
 
-	r.logf = logf
-	r.addr = statsHouseAddr
-	if r.conn != nil {
-		err := r.conn.Close()
+	c.logf = logf
+	c.addr = statsHouseAddr
+	if c.conn != nil {
+		err := c.conn.Close()
 		if err != nil {
 			logf("[statshouse] failed to close connection: %v", err)
 		}
-		r.conn = nil
-		r.writeErrTime = time.Time{}
+		c.conn = nil
+		c.writeErrTime = time.Time{}
 	}
-	if r.addr == "" {
-		r.logf("[statshouse] configured with empty address, all statistics will be silently dropped")
+	if c.addr == "" {
+		c.logf("[statshouse] configured with empty address, all statistics will be silently dropped")
 	}
 }
 
-func (r *Registry) getLog() LoggerFunc {
-	r.confMu.Lock()
-	defer r.confMu.Unlock()
-	return r.logf // return func instead of calling it here to not alter the callstack information in the log
+func (c *Client) getLog() LoggerFunc {
+	c.confMu.Lock()
+	defer c.confMu.Unlock()
+	return c.logf // return func instead of calling it here to not alter the callstack information in the log
 }
 
 func tillNextHalfPeriod(now time.Time) time.Duration {
 	return now.Truncate(defaultSendPeriod).Add(defaultSendPeriod * 3 / 2).Sub(now)
 }
 
-func (r *Registry) run() {
-	var regularCache []func(*Registry)
+func (c *Client) run() {
+	var regularCache []func(*Client)
 	tick := time.After(tillNextHalfPeriod(time.Now()))
 	for {
 		select {
 		case now := <-tick:
-			regularCache = r.callRegularFuncs(regularCache[:0])
-			r.send()
+			regularCache = c.callRegularFuncs(regularCache[:0])
+			c.send()
 			tick = time.After(tillNextHalfPeriod(now))
-		case ch := <-r.close:
-			r.send() // last send: we will lose all metrics produced "after"
+		case ch := <-c.close:
+			c.send() // last send: we will lose all metrics produced "after"
 			close(ch)
 			return
 		}
 	}
 }
 
-func (r *Registry) load() ([]metricKeyValue, []metricKeyValueNamed, string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (c *Client) load() ([]metricKeyValue, []metricKeyValueNamed, string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-	return r.r, r.rn, r.env
+	return c.r, c.rn, c.env
 }
 
-func (r *Registry) swapToCur(s *Metric) {
+func (c *Client) swapToCur(s *Metric) {
 	n := atomicLoadFloat64(&s.atomicCount)
 	for !atomicCASFloat64(&s.atomicCount, n, 0) {
 		n = atomicLoadFloat64(&s.atomicCount)
 	}
-	atomicStoreFloat64(&r.cur.atomicCount, n)
+	atomicStoreFloat64(&c.cur.atomicCount, n)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	r.cur.value = append(r.cur.value[:0], s.value...)
-	r.cur.unique = append(r.cur.unique[:0], s.unique...)
-	r.cur.stop = append(r.cur.stop[:0], s.stop...)
+	c.cur.value = append(c.cur.value[:0], s.value...)
+	c.cur.unique = append(c.cur.unique[:0], s.unique...)
+	c.cur.stop = append(c.cur.stop[:0], s.stop...)
 	s.value = s.value[:0]
 	s.unique = s.unique[:0]
 	s.stop = s.stop[:0]
@@ -306,8 +306,8 @@ func fillTag(k *metricKeyTransport, tagName string, tagValue string) {
 	k.hasEnv = k.hasEnv || tagName == "0" || tagName == "env" || tagName == "key0" // TODO - keep only "0", rest are legacy
 }
 
-func (r *Registry) send() {
-	ss, ssn, env := r.load()
+func (c *Client) send() {
+	ss, ssn, env := c.load()
 	for _, s := range ss {
 		k := metricKeyTransport{name: s.k.name}
 		fillTag(&k, "0", s.k.tags.Env)
@@ -330,14 +330,14 @@ func (r *Registry) send() {
 			fillTag(&k, "0", env)
 		}
 
-		r.swapToCur(s.v)
-		if n := atomicLoadFloat64(&r.cur.atomicCount); n > 0 {
-			r.sendCounter(&k, "", n, 0)
+		c.swapToCur(s.v)
+		if n := atomicLoadFloat64(&c.cur.atomicCount); n > 0 {
+			c.sendCounter(&k, "", n, 0)
 		}
-		r.sendValues(&k, "", 0, 0, r.cur.value)
-		r.sendUniques(&k, "", 0, 0, r.cur.unique)
-		for _, skey := range r.cur.stop {
-			r.sendCounter(&k, skey, 1, 0)
+		c.sendValues(&k, "", 0, 0, c.cur.value)
+		c.sendUniques(&k, "", 0, 0, c.cur.unique)
+		for _, skey := range c.cur.stop {
+			c.sendCounter(&k, skey, 1, 0)
 		}
 	}
 	for _, s := range ssn {
@@ -349,31 +349,31 @@ func (r *Registry) send() {
 			fillTag(&k, "0", env)
 		}
 
-		r.swapToCur(s.v)
-		if n := atomicLoadFloat64(&r.cur.atomicCount); n > 0 {
-			r.sendCounter(&k, "", n, 0)
+		c.swapToCur(s.v)
+		if n := atomicLoadFloat64(&c.cur.atomicCount); n > 0 {
+			c.sendCounter(&k, "", n, 0)
 		}
-		r.sendValues(&k, "", 0, 0, r.cur.value)
-		r.sendUniques(&k, "", 0, 0, r.cur.unique)
-		for _, skey := range r.cur.stop {
-			r.sendCounter(&k, skey, 1, 0)
+		c.sendValues(&k, "", 0, 0, c.cur.value)
+		c.sendUniques(&k, "", 0, 0, c.cur.unique)
+		for _, skey := range c.cur.stop {
+			c.sendCounter(&k, skey, 1, 0)
 		}
 	}
 
-	r.flush()
+	c.flush()
 }
 
-func (r *Registry) sendCounter(k *metricKeyTransport, skey string, counter float64, tsUnixSec uint32) {
-	_ = r.writeHeader(k, skey, counter, tsUnixSec, counterFieldsMask, 0)
+func (c *Client) sendCounter(k *metricKeyTransport, skey string, counter float64, tsUnixSec uint32) {
+	_ = c.writeHeader(k, skey, counter, tsUnixSec, counterFieldsMask, 0)
 }
 
-func (r *Registry) sendUniques(k *metricKeyTransport, skey string, counter float64, tsUnixSec uint32, values []int64) {
+func (c *Client) sendUniques(k *metricKeyTransport, skey string, counter float64, tsUnixSec uint32, values []int64) {
 	fieldsMask := uniqueFieldsMask
 	if counter != 0 && counter != float64(len(values)) {
 		fieldsMask |= counterFieldsMask
 	}
 	for len(values) > 0 {
-		left := r.writeHeader(k, skey, counter, tsUnixSec, fieldsMask, tlInt32Size+tlInt64Size)
+		left := c.writeHeader(k, skey, counter, tsUnixSec, fieldsMask, tlInt32Size+tlInt64Size)
 		if left < 0 {
 			return // header did not fit into empty buffer
 		}
@@ -381,21 +381,21 @@ func (r *Registry) sendUniques(k *metricKeyTransport, skey string, counter float
 		if writeCount > len(values) {
 			writeCount = len(values)
 		}
-		r.packetBuf = basictl.NatWrite(r.packetBuf, uint32(writeCount))
+		c.packetBuf = basictl.NatWrite(c.packetBuf, uint32(writeCount))
 		for i := 0; i < writeCount; i++ {
-			r.packetBuf = basictl.LongWrite(r.packetBuf, values[i])
+			c.packetBuf = basictl.LongWrite(c.packetBuf, values[i])
 		}
 		values = values[writeCount:]
 	}
 }
 
-func (r *Registry) sendValues(k *metricKeyTransport, skey string, counter float64, tsUnixSec uint32, values []float64) {
+func (c *Client) sendValues(k *metricKeyTransport, skey string, counter float64, tsUnixSec uint32, values []float64) {
 	fieldsMask := valueFieldsMask
 	if counter != 0 && counter != float64(len(values)) {
 		fieldsMask |= counterFieldsMask
 	}
 	for len(values) > 0 {
-		left := r.writeHeader(k, skey, counter, tsUnixSec, fieldsMask, tlInt32Size+tlFloat64Size)
+		left := c.writeHeader(k, skey, counter, tsUnixSec, fieldsMask, tlInt32Size+tlFloat64Size)
 		if left < 0 {
 			return // header did not fit into empty buffer
 		}
@@ -403,101 +403,101 @@ func (r *Registry) sendValues(k *metricKeyTransport, skey string, counter float6
 		if writeCount > len(values) {
 			writeCount = len(values)
 		}
-		r.packetBuf = basictl.NatWrite(r.packetBuf, uint32(writeCount))
+		c.packetBuf = basictl.NatWrite(c.packetBuf, uint32(writeCount))
 		for i := 0; i < writeCount; i++ {
-			r.packetBuf = basictl.DoubleWrite(r.packetBuf, values[i])
+			c.packetBuf = basictl.DoubleWrite(c.packetBuf, values[i])
 		}
 		values = values[writeCount:]
 	}
 }
 
-func (r *Registry) flush() {
-	if r.batchCount <= 0 {
+func (c *Client) flush() {
+	if c.batchCount <= 0 {
 		return
 	}
-	binary.LittleEndian.PutUint32(r.packetBuf, metricsBatchTag)
-	binary.LittleEndian.PutUint32(r.packetBuf[tlInt32Size:], 0) // fields_mask
-	binary.LittleEndian.PutUint32(r.packetBuf[2*tlInt32Size:], uint32(r.batchCount))
-	data := r.packetBuf
-	r.packetBuf = r.packetBuf[:batchHeaderLen]
-	r.batchCount = 0
+	binary.LittleEndian.PutUint32(c.packetBuf, metricsBatchTag)
+	binary.LittleEndian.PutUint32(c.packetBuf[tlInt32Size:], 0) // fields_mask
+	binary.LittleEndian.PutUint32(c.packetBuf[2*tlInt32Size:], uint32(c.batchCount))
+	data := c.packetBuf
+	c.packetBuf = c.packetBuf[:batchHeaderLen]
+	c.batchCount = 0
 
-	r.confMu.Lock()
-	defer r.confMu.Unlock()
+	c.confMu.Lock()
+	defer c.confMu.Unlock()
 
-	if r.conn == nil && r.addr != "" {
-		conn, err := net.Dial("udp", r.addr)
+	if c.conn == nil && c.addr != "" {
+		conn, err := net.Dial("udp", c.addr)
 		if err != nil {
-			r.logf("[statshouse] failed to dial statshouse: %v", err) // not using getLog() because confMu is already locked
+			c.logf("[statshouse] failed to dial statshouse: %v", err) // not using getLog() because confMu is already locked
 			return
 		}
-		r.conn = conn.(*net.UDPConn)
+		c.conn = conn.(*net.UDPConn)
 	}
-	if r.conn != nil && r.addr != "" {
-		_, err := r.conn.Write(data)
+	if c.conn != nil && c.addr != "" {
+		_, err := c.conn.Write(data)
 		if err != nil {
 			now := time.Now()
-			if now.Sub(r.writeErrTime) > errorReportingPeriod {
-				r.writeErrTime = now
-				r.logf("[statshouse] failed to send data to statshouse: %v", err) // not using getLog() because confMu is already locked
+			if now.Sub(c.writeErrTime) > errorReportingPeriod {
+				c.writeErrTime = now
+				c.logf("[statshouse] failed to send data to statshouse: %v", err) // not using getLog() because confMu is already locked
 			}
 		}
 	}
 }
 
-func (r *Registry) writeHeaderImpl(k *metricKeyTransport, skey string, counter float64, tsUnixSec uint32, fieldsMask uint32) {
+func (c *Client) writeHeaderImpl(k *metricKeyTransport, skey string, counter float64, tsUnixSec uint32, fieldsMask uint32) {
 	if tsUnixSec != 0 {
 		fieldsMask |= tsFieldsMask
 	}
-	r.packetBuf = basictl.NatWrite(r.packetBuf, fieldsMask)
-	r.packetBuf = basictl.StringWriteTruncated(r.packetBuf, k.name)
+	c.packetBuf = basictl.NatWrite(c.packetBuf, fieldsMask)
+	c.packetBuf = basictl.StringWriteTruncated(c.packetBuf, k.name)
 	// can write more than maxTags pairs, but this is allowed by statshouse
 	numSet := k.numSet
 	if skey != "" {
 		numSet++
 	}
-	r.packetBuf = basictl.NatWrite(r.packetBuf, uint32(numSet))
+	c.packetBuf = basictl.NatWrite(c.packetBuf, uint32(numSet))
 	if skey != "" {
-		r.writeTag("_s", skey)
+		c.writeTag("_s", skey)
 	}
 	for i := 0; i < k.numSet; i++ {
-		r.writeTag(k.tags[i][0], k.tags[i][1])
+		c.writeTag(k.tags[i][0], k.tags[i][1])
 	}
 	if fieldsMask&counterFieldsMask != 0 {
-		r.packetBuf = basictl.DoubleWrite(r.packetBuf, counter)
+		c.packetBuf = basictl.DoubleWrite(c.packetBuf, counter)
 	}
 	if fieldsMask&tsFieldsMask != 0 {
-		r.packetBuf = basictl.NatWrite(r.packetBuf, tsUnixSec)
+		c.packetBuf = basictl.NatWrite(c.packetBuf, tsUnixSec)
 	}
 }
 
 // returns space reserve or <0 if did not fit
-func (r *Registry) writeHeader(k *metricKeyTransport, skey string, counter float64, tsUnixSec uint32, fieldsMask uint32, reserveSpace int) int {
-	wasLen := len(r.packetBuf)
-	r.writeHeaderImpl(k, skey, counter, tsUnixSec, fieldsMask)
-	left := maxPayloadSize - len(r.packetBuf) - reserveSpace
+func (c *Client) writeHeader(k *metricKeyTransport, skey string, counter float64, tsUnixSec uint32, fieldsMask uint32, reserveSpace int) int {
+	wasLen := len(c.packetBuf)
+	c.writeHeaderImpl(k, skey, counter, tsUnixSec, fieldsMask)
+	left := maxPayloadSize - len(c.packetBuf) - reserveSpace
 	if left >= 0 {
-		r.batchCount++
+		c.batchCount++
 		return left
 	}
 	if wasLen != batchHeaderLen {
-		r.packetBuf = r.packetBuf[:wasLen]
-		r.flush()
-		r.writeHeaderImpl(k, skey, counter, tsUnixSec, fieldsMask)
-		left = maxPayloadSize - len(r.packetBuf) - reserveSpace
+		c.packetBuf = c.packetBuf[:wasLen]
+		c.flush()
+		c.writeHeaderImpl(k, skey, counter, tsUnixSec, fieldsMask)
+		left = maxPayloadSize - len(c.packetBuf) - reserveSpace
 		if left >= 0 {
-			r.batchCount++
+			c.batchCount++
 			return left
 		}
 	}
-	r.packetBuf = r.packetBuf[:wasLen]
-	r.getLog()("[statshouse] metric %q payload too big to fit into packet, discarding", k.name)
+	c.packetBuf = c.packetBuf[:wasLen]
+	c.getLog()("[statshouse] metric %q payload too big to fit into packet, discarding", k.name)
 	return -1
 }
 
-func (r *Registry) writeTag(tagName string, tagValue string) {
-	r.packetBuf = basictl.StringWriteTruncated(r.packetBuf, tagName)
-	r.packetBuf = basictl.StringWriteTruncated(r.packetBuf, tagValue)
+func (c *Client) writeTag(tagName string, tagValue string) {
+	c.packetBuf = basictl.StringWriteTruncated(c.packetBuf, tagName)
+	c.packetBuf = basictl.StringWriteTruncated(c.packetBuf, tagValue)
 }
 
 // AccessMetricRaw is the preferred way to access [Metric] to record observations.
@@ -522,52 +522,52 @@ func (r *Registry) writeTag(tagName string, tagValue string) {
 //	var countPacketOK = statshouse.AccessMetricRaw("foo", statshouse.RawTags{Tag1: "ok"})
 //
 //	countPacketOK.Count(1)  // lowest overhead possible
-func (r *Registry) AccessMetricRaw(metric string, tags RawTags) *Metric {
+func (c *Client) AccessMetricRaw(metric string, tags RawTags) *Metric {
 	// We must do absolute minimum of work here
 	k := metricKey{name: metric, tags: tags}
-	r.mu.RLock()
-	e, ok := r.w[k]
-	r.mu.RUnlock()
+	c.mu.RLock()
+	e, ok := c.w[k]
+	c.mu.RUnlock()
 	if ok {
 		return e
 	}
 
-	r.mu.Lock()
-	e, ok = r.w[k]
+	c.mu.Lock()
+	e, ok = c.w[k]
 	if !ok {
 		e = &Metric{}
-		r.w[k] = e
-		r.r = append(r.r, metricKeyValue{k: k, v: e})
+		c.w[k] = e
+		c.r = append(c.r, metricKeyValue{k: k, v: e})
 	}
-	r.mu.Unlock()
+	c.mu.Unlock()
 	return e
 }
 
-// AccessMetric is similar to [*Registry.AccessMetricRaw] but slightly slower, and allows to specify tags by name.
-func (r *Registry) AccessMetric(metric string, tags Tags) *Metric {
+// AccessMetric is similar to [*Client.AccessMetricRaw] but slightly slower, and allows to specify tags by name.
+func (c *Client) AccessMetric(metric string, tags Tags) *Metric {
 	// We must do absolute minimum of work here
 	k := metricKeyNamed{name: metric}
 	copy(k.tags[:], tags)
 
-	r.mu.RLock()
-	e, ok := r.wn[k]
-	r.mu.RUnlock()
+	c.mu.RLock()
+	e, ok := c.wn[k]
+	c.mu.RUnlock()
 	if ok {
 		return e
 	}
 
-	r.mu.Lock()
-	e, ok = r.wn[k]
+	c.mu.Lock()
+	e, ok = c.wn[k]
 	if !ok {
 		e = &Metric{}
-		r.wn[k] = e
-		r.rn = append(r.rn, metricKeyValueNamed{k: k, v: e})
+		c.wn[k] = e
+		c.rn = append(c.rn, metricKeyValueNamed{k: k, v: e})
 	}
-	r.mu.Unlock()
+	c.mu.Unlock()
 	return e
 }
 
-// Metric pointer is obtained via [*Registry.AccessMetricRaw] or [*Registry.AccessMetric]
+// Metric pointer is obtained via [*Client.AccessMetricRaw] or [*Client.AccessMetric]
 // and is used to record attributes of observed events.
 type Metric struct {
 	// Place atomics first to ensure proper alignment, see https://pkg.go.dev/sync/atomic#pkg-note-BUG
