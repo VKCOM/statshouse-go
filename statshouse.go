@@ -38,6 +38,8 @@ const (
 
 var (
 	globalClient = NewClient(log.Printf, DefaultStatsHouseAddr, "")
+
+	tagIDs = [maxTags]string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"}
 )
 
 type LoggerFunc func(format string, args ...interface{})
@@ -104,7 +106,7 @@ type metricKey struct {
 	tags RawTags
 }
 
-type internalTags [16][2]string
+type internalTags [maxTags][2]string
 
 type metricKeyNamed struct {
 	name string
@@ -115,9 +117,7 @@ type metricKeyNamed struct {
 type Tags [][2]string
 
 // RawTags are used to call [*Client.AccessMetricRaw].
-type RawTags struct {
-	Env, Tag1, Tag2, Tag3, Tag4, Tag5, Tag6, Tag7, Tag8, Tag9, Tag10, Tag11, Tag12, Tag13, Tag14, Tag15 string
-}
+type RawTags [maxTags]string
 
 type metricKeyValue struct {
 	k metricKey
@@ -310,22 +310,9 @@ func (c *Client) send() {
 	ss, ssn, env := c.load()
 	for _, s := range ss {
 		k := metricKeyTransport{name: s.k.name}
-		fillTag(&k, "0", s.k.tags.Env)
-		fillTag(&k, "1", s.k.tags.Tag1)
-		fillTag(&k, "2", s.k.tags.Tag2)
-		fillTag(&k, "3", s.k.tags.Tag3)
-		fillTag(&k, "4", s.k.tags.Tag4)
-		fillTag(&k, "5", s.k.tags.Tag5)
-		fillTag(&k, "6", s.k.tags.Tag6)
-		fillTag(&k, "7", s.k.tags.Tag7)
-		fillTag(&k, "8", s.k.tags.Tag8)
-		fillTag(&k, "9", s.k.tags.Tag9)
-		fillTag(&k, "10", s.k.tags.Tag10)
-		fillTag(&k, "11", s.k.tags.Tag11)
-		fillTag(&k, "12", s.k.tags.Tag12)
-		fillTag(&k, "13", s.k.tags.Tag13)
-		fillTag(&k, "14", s.k.tags.Tag14)
-		fillTag(&k, "15", s.k.tags.Tag15)
+		for i, v := range s.k.tags {
+			fillTag(&k, tagIDs[i], v)
+		}
 		if !k.hasEnv {
 			fillTag(&k, "0", env)
 		}
@@ -503,7 +490,7 @@ func (c *Client) writeTag(tagName string, tagValue string) {
 // AccessMetricRaw is the preferred way to access [Metric] to record observations.
 // AccessMetricRaw calls should be encapsulated in helper functions. Direct calls like
 //
-//	statshouse.AccessMetricRaw("packet_size", statshouse.RawTags{Tag1: "ok"}).Value(float64(len(pkg)))
+//	statshouse.AccessMetricRaw("packet_size", statshouse.RawTags{1: "ok"}).Value(float64(len(pkg)))
 //
 // should be replaced with calls via higher-level helper functions:
 //
@@ -514,12 +501,12 @@ func (c *Client) writeTag(tagName string, tagValue string) {
 //	    if ok {
 //	        status = "ok"
 //	    }
-//	    statshouse.AccessMetricRaw("packet_size", statshouse.RawTags{Tag1: status}).Value(float64(size))
+//	    statshouse.AccessMetricRaw("packet_size", statshouse.RawTags{1: status}).Value(float64(size))
 //	}
 //
 // As an optimization, it is possible to save the result of AccessMetricRaw for later use:
 //
-//	var countPacketOK = statshouse.AccessMetricRaw("foo", statshouse.RawTags{Tag1: "ok"})
+//	var countPacketOK = statshouse.AccessMetricRaw("foo", statshouse.RawTags{1: "ok"})
 //
 //	countPacketOK.Count(1)  // lowest overhead possible
 func (c *Client) AccessMetricRaw(metric string, tags RawTags) *Metric {

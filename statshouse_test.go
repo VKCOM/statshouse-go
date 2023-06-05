@@ -22,7 +22,7 @@ func TestCountRace(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 1000; j++ {
-				c.AccessMetricRaw("test_stat", statshouse.RawTags{Tag1: "hello", Tag2: "world"}).Count(float64(j))
+				c.AccessMetricRaw("test_stat", statshouse.RawTags{1: "hello", 2: "world"}).Count(float64(j))
 			}
 		}()
 	}
@@ -34,13 +34,13 @@ func BenchmarkValue2(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		c.AccessMetricRaw("test_stat", statshouse.RawTags{Tag1: "hello", Tag2: "world"}).Value(float64(i))
+		c.AccessMetricRaw("test_stat", statshouse.RawTags{1: "hello", 2: "world"}).Value(float64(i))
 	}
 }
 
 func BenchmarkRawValue(b *testing.B) {
 	c := statshouse.NewClient(b.Logf, "" /* avoid sending anything */, "")
-	s := c.AccessMetricRaw("test_stat", statshouse.RawTags{Tag1: "hello", Tag2: "world"})
+	s := c.AccessMetricRaw("test_stat", statshouse.RawTags{1: "hello", 2: "world"})
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
@@ -53,13 +53,13 @@ func BenchmarkCount4(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		c.AccessMetricRaw("test_stat", statshouse.RawTags{Tag1: "hello", Tag2: "brave", Tag3: "new", Tag4: "world"}).Count(float64(i))
+		c.AccessMetricRaw("test_stat", statshouse.RawTags{1: "hello", 2: "brave", 3: "new", 4: "world"}).Count(float64(i))
 	}
 }
 
 func BenchmarkRawCount(b *testing.B) {
 	c := statshouse.NewClient(b.Logf, "" /* avoid sending anything */, "")
-	s := c.AccessMetricRaw("test_stat", statshouse.RawTags{Tag1: "hello", Tag2: "brave", Tag3: "new", Tag4: "world"})
+	s := c.AccessMetricRaw("test_stat", statshouse.RawTags{1: "hello", 2: "brave", 3: "new", 4: "world"})
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
