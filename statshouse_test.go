@@ -22,7 +22,7 @@ func TestCountRace(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 1000; j++ {
-				c.GetMetric("test_stat", statshouse.Tags{1: "hello", 2: "world"}).Count(float64(j))
+				c.Metric("test_stat", statshouse.Tags{1: "hello", 2: "world"}).Count(float64(j))
 			}
 		}()
 	}
@@ -34,13 +34,13 @@ func BenchmarkValue2(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		c.GetMetric("test_stat", statshouse.Tags{1: "hello", 2: "world"}).Value(float64(i))
+		c.Metric("test_stat", statshouse.Tags{1: "hello", 2: "world"}).Value(float64(i))
 	}
 }
 
 func BenchmarkRawValue(b *testing.B) {
 	c := statshouse.NewClient(b.Logf, "" /* avoid sending anything */, "")
-	s := c.GetMetric("test_stat", statshouse.Tags{1: "hello", 2: "world"})
+	s := c.Metric("test_stat", statshouse.Tags{1: "hello", 2: "world"})
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
@@ -53,13 +53,13 @@ func BenchmarkCount4(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		c.GetMetric("test_stat", statshouse.Tags{1: "hello", 2: "brave", 3: "new", 4: "world"}).Count(float64(i))
+		c.Metric("test_stat", statshouse.Tags{1: "hello", 2: "brave", 3: "new", 4: "world"}).Count(float64(i))
 	}
 }
 
 func BenchmarkRawCount(b *testing.B) {
 	c := statshouse.NewClient(b.Logf, "" /* avoid sending anything */, "")
-	s := c.GetMetric("test_stat", statshouse.Tags{1: "hello", 2: "brave", 3: "new", 4: "world"})
+	s := c.Metric("test_stat", statshouse.Tags{1: "hello", 2: "brave", 3: "new", 4: "world"})
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
@@ -72,13 +72,13 @@ func BenchmarkLabeledValue2(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		c.GetMetricNamed("test_stat", statshouse.NamedTags{{"hello", "world"}, {"world", "hello"}}).Value(float64(i))
+		c.MetricNamed("test_stat", statshouse.NamedTags{{"hello", "world"}, {"world", "hello"}}).Value(float64(i))
 	}
 }
 
 func BenchmarkRawLabeledValue(b *testing.B) {
 	c := statshouse.NewClient(b.Logf, "" /* avoid sending anything */, "")
-	s := c.GetMetricNamed("test_stat", statshouse.NamedTags{{"hello", "world"}, {"world", "hello"}})
+	s := c.MetricNamed("test_stat", statshouse.NamedTags{{"hello", "world"}, {"world", "hello"}})
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
@@ -91,13 +91,13 @@ func BenchmarkLabeledCount4(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		c.GetMetricNamed("test_stat", statshouse.NamedTags{{"hello", "world"}, {"world", "hello"}, {"hello1", "world"}, {"world1", "hello"}}).Count(float64(i))
+		c.MetricNamed("test_stat", statshouse.NamedTags{{"hello", "world"}, {"world", "hello"}, {"hello1", "world"}, {"world1", "hello"}}).Count(float64(i))
 	}
 }
 
 func BenchmarkRawLabeledCount(b *testing.B) {
 	c := statshouse.NewClient(b.Logf, "" /* avoid sending anything */, "")
-	s := c.GetMetricNamed("test_stat", statshouse.NamedTags{{"hello", "world"}, {"world", "hello"}, {"hello1", "world"}, {"world1", "hello"}})
+	s := c.MetricNamed("test_stat", statshouse.NamedTags{{"hello", "world"}, {"world", "hello"}, {"hello1", "world"}, {"world1", "hello"}})
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {

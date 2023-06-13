@@ -56,16 +56,16 @@ func Close() error {
 	return globalClient.Close()
 }
 
-// GetMetric calls [*Client.GetMetric] on the global [Client].
-// It is valid to call GetMetric before [Configure].
-func GetMetric(metric string, tags Tags) *Metric {
-	return globalClient.GetMetric(metric, tags)
+// Metric calls [*Client.Metric] on the global [Client].
+// It is valid to call Metric before [Configure].
+func Metric(metric string, tags Tags) *MetricRef {
+	return globalClient.Metric(metric, tags)
 }
 
-// GetMetricNamed calls [*Client.GetMetricNamed] on the global [Client].
-// It is valid to call GetMetricNamed before [Configure].
-func GetMetricNamed(metric string, tags NamedTags) *Metric {
-	return globalClient.GetMetricNamed(metric, tags)
+// MetricNamed calls [*Client.MetricNamed] on the global [Client].
+// It is valid to call MetricNamed before [Configure].
+func MetricNamed(metric string, tags NamedTags) *MetricRef {
+	return globalClient.MetricNamed(metric, tags)
 }
 
 // StartRegularMeasurement calls [*Client.StartRegularMeasurement] on the global [Client].
@@ -91,9 +91,9 @@ func NewClient(logf LoggerFunc, statsHouseAddr string, defaultEnv string) *Clien
 		addr:         statsHouseAddr,
 		packetBuf:    make([]byte, batchHeaderLen, maxPayloadSize), // can grow larger than maxPayloadSize if writing huge header
 		close:        make(chan chan struct{}),
-		cur:          &Metric{},
-		w:            map[metricKey]*Metric{},
-		wn:           map[metricKeyNamed]*Metric{},
+		cur:          &MetricRef{},
+		w:            map[metricKey]*MetricRef{},
+		wn:           map[metricKeyNamed]*MetricRef{},
 		env:          defaultEnv,
 		regularFuncs: map[int]func(*Client){},
 	}
@@ -113,20 +113,20 @@ type metricKeyNamed struct {
 	tags internalTags
 }
 
-// NamedTags are used to call [*Client.GetMetricNamed].
+// NamedTags are used to call [*Client.MetricNamed].
 type NamedTags [][2]string
 
-// Tags are used to call [*Client.GetMetric].
+// Tags are used to call [*Client.Metric].
 type Tags [maxTags]string
 
 type metricKeyValue struct {
 	k metricKey
-	v *Metric
+	v *MetricRef
 }
 
 type metricKeyValueNamed struct {
 	k metricKeyNamed
-	v *Metric
+	v *MetricRef
 }
 
 // Client manages metric aggregation and transport to a StatsHouse agent.
@@ -143,12 +143,12 @@ type Client struct {
 	close      chan chan struct{}
 	packetBuf  []byte
 	batchCount int
-	cur        *Metric
+	cur        *MetricRef
 
 	mu             sync.RWMutex
-	w              map[metricKey]*Metric
+	w              map[metricKey]*MetricRef
 	r              []metricKeyValue
-	wn             map[metricKeyNamed]*Metric
+	wn             map[metricKeyNamed]*MetricRef
 	rn             []metricKeyValueNamed
 	env            string // if set, will be put into key0/env
 	regularFuncsMu sync.Mutex
@@ -272,7 +272,7 @@ func (c *Client) load() ([]metricKeyValue, []metricKeyValueNamed, string) {
 	return c.r, c.rn, c.env
 }
 
-func (c *Client) swapToCur(s *Metric) {
+func (c *Client) swapToCur(s *MetricRef) {
 	n := atomicLoadFloat64(&s.atomicCount)
 	for !atomicCASFloat64(&s.atomicCount, n, 0) {
 		n = atomicLoadFloat64(&s.atomicCount)
@@ -487,10 +487,10 @@ func (c *Client) writeTag(tagName string, tagValue string) {
 	c.packetBuf = basictl.StringWriteTruncated(c.packetBuf, tagValue)
 }
 
-// GetMetric is the preferred way to access [Metric] to record observations.
-// GetMetric calls should be encapsulated in helper functions. Direct calls like
+// Metric is the preferred way to access [MetricRef] to record observations.
+// Metric calls should be encapsulated in helper functions. Direct calls like
 //
-//	statshouse.GetMetric("packet_size", statshouse.Tags{1: "ok"}).Value(float64(len(pkg)))
+//	statshouse.Metric("packet_size", statshouse.Tags{1: "ok"}).Value(float64(len(pkg)))
 //
 // should be replaced with calls via higher-level helper functions:
 //
@@ -501,15 +501,15 @@ func (c *Client) writeTag(tagName string, tagValue string) {
 //	    if ok {
 //	        status = "ok"
 //	    }
-//	    statshouse.GetMetric("packet_size", statshouse.Tags{1: status}).Value(float64(size))
+//	    statshouse.Metric("packet_size", statshouse.Tags{1: status}).Value(float64(size))
 //	}
 //
-// As an optimization, it is possible to save the result of GetMetric for later use:
+// As an optimization, it is possible to save the result of Metric for later use:
 //
-//	var countPacketOK = statshouse.GetMetric("foo", statshouse.Tags{1: "ok"})
+//	var countPacketOK = statshouse.Metric("foo", statshouse.Tags{1: "ok"})
 //
 //	countPacketOK.Count(1)  // lowest overhead possible
-func (c *Client) GetMetric(metric string, tags Tags) *Metric {
+func (c *Client) Metric(metric string, tags Tags) *MetricRef {
 	// We must do absolute minimum of work here
 	k := metricKey{name: metric, tags: tags}
 	c.mu.RLock()
@@ -522,7 +522,7 @@ func (c *Client) GetMetric(metric string, tags Tags) *Metric {
 	c.mu.Lock()
 	e, ok = c.w[k]
 	if !ok {
-		e = &Metric{}
+		e = &MetricRef{}
 		c.w[k] = e
 		c.r = append(c.r, metricKeyValue{k: k, v: e})
 	}
@@ -530,8 +530,8 @@ func (c *Client) GetMetric(metric string, tags Tags) *Metric {
 	return e
 }
 
-// GetMetricNamed is similar to [*Client.GetMetric] but slightly slower, and allows to specify tags by name.
-func (c *Client) GetMetricNamed(metric string, tags NamedTags) *Metric {
+// MetricNamed is similar to [*Client.Metric] but slightly slower, and allows to specify tags by name.
+func (c *Client) MetricNamed(metric string, tags NamedTags) *MetricRef {
 	// We must do absolute minimum of work here
 	k := metricKeyNamed{name: metric}
 	copy(k.tags[:], tags)
@@ -546,7 +546,7 @@ func (c *Client) GetMetricNamed(metric string, tags NamedTags) *Metric {
 	c.mu.Lock()
 	e, ok = c.wn[k]
 	if !ok {
-		e = &Metric{}
+		e = &MetricRef{}
 		c.wn[k] = e
 		c.rn = append(c.rn, metricKeyValueNamed{k: k, v: e})
 	}
@@ -554,9 +554,9 @@ func (c *Client) GetMetricNamed(metric string, tags NamedTags) *Metric {
 	return e
 }
 
-// Metric pointer is obtained via [*Client.GetMetric] or [*Client.GetMetricNamed]
+// MetricRef pointer is obtained via [*Client.Metric] or [*Client.MetricNamed]
 // and is used to record attributes of observed events.
-type Metric struct {
+type MetricRef struct {
 	// Place atomics first to ensure proper alignment, see https://pkg.go.dev/sync/atomic#pkg-note-BUG
 	atomicCount uint64
 
@@ -567,7 +567,7 @@ type Metric struct {
 }
 
 // Count records the number of events or observations.
-func (m *Metric) Count(n float64) {
+func (m *MetricRef) Count(n float64) {
 	c := atomicLoadFloat64(&m.atomicCount)
 	for !atomicCASFloat64(&m.atomicCount, c, c+n) {
 		c = atomicLoadFloat64(&m.atomicCount)
@@ -575,42 +575,42 @@ func (m *Metric) Count(n float64) {
 }
 
 // Value records the observed value for distribution estimation.
-func (m *Metric) Value(value float64) {
+func (m *MetricRef) Value(value float64) {
 	m.mu.Lock()
 	m.value = append(m.value, value)
 	m.mu.Unlock()
 }
 
 // Values records the observed values for distribution estimation.
-func (m *Metric) Values(values []float64) {
+func (m *MetricRef) Values(values []float64) {
 	m.mu.Lock()
 	m.value = append(m.value, values...)
 	m.mu.Unlock()
 }
 
 // Unique records the observed value for cardinality estimation.
-func (m *Metric) Unique(value int64) {
+func (m *MetricRef) Unique(value int64) {
 	m.mu.Lock()
 	m.unique = append(m.unique, value)
 	m.mu.Unlock()
 }
 
 // Uniques records the observed values for cardinality estimation.
-func (m *Metric) Uniques(values []int64) {
+func (m *MetricRef) Uniques(values []int64) {
 	m.mu.Lock()
 	m.unique = append(m.unique, values...)
 	m.mu.Unlock()
 }
 
 // StringTop records the observed value for popularity estimation.
-func (m *Metric) StringTop(value string) {
+func (m *MetricRef) StringTop(value string) {
 	m.mu.Lock()
 	m.stop = append(m.stop, value)
 	m.mu.Unlock()
 }
 
 // StringsTop records the observed values for popularity estimation.
-func (m *Metric) StringsTop(values []string) {
+func (m *MetricRef) StringsTop(values []string) {
 	m.mu.Lock()
 	m.stop = append(m.stop, values...)
 	m.mu.Unlock()
