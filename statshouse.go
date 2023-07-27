@@ -475,6 +475,8 @@ func (c *Client) writeHeader(k *metricKeyTransport, skey string, counter float64
 		if left >= 0 {
 			c.batchCount++
 			return left
+		} else {
+			wasLen = batchHeaderLen
 		}
 	}
 	c.packetBuf = c.packetBuf[:wasLen]
