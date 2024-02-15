@@ -6,7 +6,10 @@
 
 package statshouse
 
-import "math"
+import (
+	"math"
+	"strconv"
+)
 
 // Advanced feature.
 // Encodes float as a raw tag in a special format, used by Statshouse.
@@ -25,6 +28,10 @@ func LexEncode(x float32) int32 {
 		bits ^= 0x7fffffff
 	}
 	return int32(bits)
+}
+
+func LexEncodeStr(x float32) string {
+	return strconv.Itoa(int(LexEncode(x)))
 }
 
 func LexDecode(x int32) float32 {
