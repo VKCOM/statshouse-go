@@ -19,7 +19,8 @@ import (
 )
 
 const (
-	DefaultStatsHouseAddr = "127.0.0.1:13337"
+	DefaultAddr    = "127.0.0.1:13337"
+	DefaultNetwork = "udp"
 
 	defaultSendPeriod    = 1 * time.Second
 	errorReportingPeriod = time.Minute
@@ -37,7 +38,7 @@ const (
 )
 
 var (
-	globalClient = NewClient(log.Printf, DefaultStatsHouseAddr, "")
+	globalClient = NewClient(log.Printf, DefaultNetwork, DefaultAddr, "")
 
 	tagIDs = [maxTags]string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"}
 )
@@ -47,7 +48,12 @@ type LoggerFunc func(format string, args ...interface{})
 // Configure is expected to be called once during app startup to configure the global [Client].
 // Specifying empty StatsHouse address will make the client silently discard all metrics.
 func Configure(logf LoggerFunc, statsHouseAddr string, defaultEnv string) {
-	globalClient.configure(logf, statsHouseAddr, defaultEnv)
+	globalClient.configure(logf, DefaultNetwork, statsHouseAddr, defaultEnv)
+}
+
+// network must be either "udp" or "unixgram"
+func ConfigureNetwork(logf LoggerFunc, network string, statsHouseAddr string, defaultEnv string) {
+	globalClient.configure(logf, network, statsHouseAddr, defaultEnv)
 }
 
 // Close calls [*Client.Close] on the global [Client].
@@ -85,10 +91,12 @@ func StopRegularMeasurement(id int) {
 // the default global [Client].
 //
 // Specifying empty StatsHouse address will make the client silently discard all metrics.
-func NewClient(logf LoggerFunc, statsHouseAddr string, defaultEnv string) *Client {
+// if you get compiler error after updating to recent version of library, pass statshouse.DefaultNetwork to network parameter
+func NewClient(logf LoggerFunc, network string, statsHouseAddr string, defaultEnv string) *Client {
 	c := &Client{
 		logf:         logf,
 		addr:         statsHouseAddr,
+		network:      network,
 		packetBuf:    make([]byte, batchHeaderLen, maxPayloadSize), // can grow larger than maxPayloadSize if writing huge header
 		close:        make(chan chan struct{}),
 		cur:          &MetricRef{},
@@ -131,10 +139,11 @@ type metricKeyValueNamed struct {
 
 // Client manages metric aggregation and transport to a StatsHouse agent.
 type Client struct {
-	confMu sync.Mutex
-	logf   LoggerFunc
-	addr   string
-	conn   *net.UDPConn
+	confMu  sync.Mutex
+	logf    LoggerFunc
+	network string
+	addr    string
+	conn    *net.UDPConn
 
 	writeErrTime time.Time // we use it to reduce # of errors reported
 
@@ -215,7 +224,7 @@ func (c *Client) callRegularFuncs(regularCache []func(*Client)) []func(*Client) 
 	return regularCache
 }
 
-func (c *Client) configure(logf LoggerFunc, statsHouseAddr string, env string) {
+func (c *Client) configure(logf LoggerFunc, network string, statsHouseAddr string, env string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.env = env
@@ -224,6 +233,7 @@ func (c *Client) configure(logf LoggerFunc, statsHouseAddr string, env string) {
 	defer c.confMu.Unlock()
 
 	c.logf = logf
+	c.network = network
 	c.addr = statsHouseAddr
 	if c.conn != nil {
 		err := c.conn.Close()
@@ -413,7 +423,7 @@ func (c *Client) flush() {
 	defer c.confMu.Unlock()
 
 	if c.conn == nil && c.addr != "" {
-		conn, err := net.Dial("udp", c.addr)
+		conn, err := net.Dial(c.network, c.addr)
 		if err != nil {
 			c.logf("[statshouse] failed to dial statshouse: %v", err) // not using getLog() because confMu is already locked
 			return
