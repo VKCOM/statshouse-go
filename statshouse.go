@@ -143,7 +143,7 @@ type Client struct {
 	logf    LoggerFunc
 	network string
 	addr    string
-	conn    *net.UDPConn
+	conn    net.Conn
 
 	writeErrTime time.Time // we use it to reduce # of errors reported
 
@@ -428,7 +428,7 @@ func (c *Client) flush() {
 			c.logf("[statshouse] failed to dial statshouse: %v", err) // not using getLog() because confMu is already locked
 			return
 		}
-		c.conn = conn.(*net.UDPConn)
+		c.conn = conn.(net.Conn)
 	}
 	if c.conn != nil && c.addr != "" {
 		_, err := c.conn.Write(data)
