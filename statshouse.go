@@ -428,7 +428,7 @@ func (c *Client) flush() {
 			c.logf("[statshouse] failed to dial statshouse: %v", err) // not using getLog() because confMu is already locked
 			return
 		}
-		c.conn = conn.(net.Conn)
+		c.conn = conn
 	}
 	if c.conn != nil && c.addr != "" {
 		_, err := c.conn.Write(data)
