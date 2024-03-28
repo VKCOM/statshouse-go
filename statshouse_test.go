@@ -14,7 +14,7 @@ import (
 )
 
 func TestCountRace(t *testing.T) {
-	c := statshouse.NewClient(t.Logf, "" /* avoid sending anything */, "")
+	c := statshouse.NewClient(t.Logf, "udp", "" /* avoid sending anything */, "")
 
 	var wg sync.WaitGroup
 	for i := 0; i < 1000; i++ {
@@ -30,7 +30,7 @@ func TestCountRace(t *testing.T) {
 }
 
 func BenchmarkValue2(b *testing.B) {
-	c := statshouse.NewClient(b.Logf, "" /* avoid sending anything */, "")
+	c := statshouse.NewClient(b.Logf, "udp", "" /* avoid sending anything */, "")
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
@@ -39,7 +39,7 @@ func BenchmarkValue2(b *testing.B) {
 }
 
 func BenchmarkRawValue(b *testing.B) {
-	c := statshouse.NewClient(b.Logf, "" /* avoid sending anything */, "")
+	c := statshouse.NewClient(b.Logf, "udp", "" /* avoid sending anything */, "")
 	s := c.Metric("test_stat", statshouse.Tags{1: "hello", 2: "world"})
 	b.ResetTimer()
 
@@ -49,7 +49,7 @@ func BenchmarkRawValue(b *testing.B) {
 }
 
 func BenchmarkCount4(b *testing.B) {
-	c := statshouse.NewClient(b.Logf, "" /* avoid sending anything */, "")
+	c := statshouse.NewClient(b.Logf, "udp", "" /* avoid sending anything */, "")
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
@@ -58,7 +58,7 @@ func BenchmarkCount4(b *testing.B) {
 }
 
 func BenchmarkRawCount(b *testing.B) {
-	c := statshouse.NewClient(b.Logf, "" /* avoid sending anything */, "")
+	c := statshouse.NewClient(b.Logf, "udp", "" /* avoid sending anything */, "")
 	s := c.Metric("test_stat", statshouse.Tags{1: "hello", 2: "brave", 3: "new", 4: "world"})
 	b.ResetTimer()
 
@@ -68,7 +68,7 @@ func BenchmarkRawCount(b *testing.B) {
 }
 
 func BenchmarkLabeledValue2(b *testing.B) {
-	c := statshouse.NewClient(b.Logf, "" /* avoid sending anything */, "")
+	c := statshouse.NewClient(b.Logf, "udp", "" /* avoid sending anything */, "")
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
@@ -77,7 +77,7 @@ func BenchmarkLabeledValue2(b *testing.B) {
 }
 
 func BenchmarkRawLabeledValue(b *testing.B) {
-	c := statshouse.NewClient(b.Logf, "" /* avoid sending anything */, "")
+	c := statshouse.NewClient(b.Logf, "udp", "" /* avoid sending anything */, "")
 	s := c.MetricNamed("test_stat", statshouse.NamedTags{{"hello", "world"}, {"world", "hello"}})
 	b.ResetTimer()
 
@@ -87,7 +87,7 @@ func BenchmarkRawLabeledValue(b *testing.B) {
 }
 
 func BenchmarkLabeledCount4(b *testing.B) {
-	c := statshouse.NewClient(b.Logf, "" /* avoid sending anything */, "")
+	c := statshouse.NewClient(b.Logf, "udp", "" /* avoid sending anything */, "")
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
@@ -96,7 +96,7 @@ func BenchmarkLabeledCount4(b *testing.B) {
 }
 
 func BenchmarkRawLabeledCount(b *testing.B) {
-	c := statshouse.NewClient(b.Logf, "" /* avoid sending anything */, "")
+	c := statshouse.NewClient(b.Logf, "udp", "" /* avoid sending anything */, "")
 	s := c.MetricNamed("test_stat", statshouse.NamedTags{{"hello", "world"}, {"world", "hello"}, {"hello1", "world"}, {"world1", "hello"}})
 	b.ResetTimer()
 
