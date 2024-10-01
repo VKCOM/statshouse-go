@@ -9,8 +9,8 @@ package statshouse
 import (
 	"encoding/binary"
 	"log"
-	"math"
 	"net"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,6 +35,7 @@ const (
 	tsFieldsMask         = uint32(1 << 4)
 	batchHeaderLen       = 3 * tlInt32Size // tag, fields_mask, # of batches
 	maxTags              = 16
+	maxEmptySendCount    = 2 // before bucket detach
 )
 
 var (
@@ -56,20 +57,40 @@ func ConfigureNetwork(logf LoggerFunc, network string, statsHouseAddr string, de
 	globalClient.configure(logf, network, statsHouseAddr, defaultEnv)
 }
 
+func TrackBucketCount() {
+	globalClient.TrackBucketCount()
+}
+
+func BucketCount() {
+	globalClient.BucketCount()
+}
+
 // Close calls [*Client.Close] on the global [Client].
 // Make sure to call Close during app exit to avoid losing the last batch of metrics.
 func Close() error {
 	return globalClient.Close()
 }
 
-// Metric calls [*Client.Metric] on the global [Client].
+// GetMetricRef calls [*Client.MetricRef] on the global [Client].
 // It is valid to call Metric before [Configure].
+func GetMetricRef(metric string, tags Tags) MetricRef {
+	return globalClient.MetricRef(metric, tags)
+}
+
+// Deprecated: causes unnecessary memory allocation.
+// Use either [Client.MetricRef] or direct write func like [Client.Count].
 func Metric(metric string, tags Tags) *MetricRef {
 	return globalClient.Metric(metric, tags)
 }
 
-// MetricNamed calls [*Client.MetricNamed] on the global [Client].
-// It is valid to call MetricNamed before [Configure].
+// MetricNamedRef calls [*Client.MetricNamedRef] on the global [Client].
+// It is valid to call MetricNamedRef before [Configure].
+func MetricNamedRef(metric string, tags NamedTags) MetricRef {
+	return globalClient.MetricNamedRef(metric, tags)
+}
+
+// Deprecated: causes unnecessary memory allocation.
+// Use either [Client.MetricNamedRef] or direct write func like [Client.Count].
 func MetricNamed(metric string, tags NamedTags) *MetricRef {
 	return globalClient.MetricNamed(metric, tags)
 }
@@ -93,17 +114,20 @@ func StopRegularMeasurement(id int) {
 // Specifying empty StatsHouse address will make the client silently discard all metrics.
 // if you get compiler error after updating to recent version of library, pass statshouse.DefaultNetwork to network parameter
 func NewClient(logf LoggerFunc, network string, statsHouseAddr string, defaultEnv string) *Client {
+	if logf == nil {
+		logf = log.Printf
+	}
 	c := &Client{
-		logf:         logf,
+		logF:         logf,
 		addr:         statsHouseAddr,
 		network:      network,
 		packetBuf:    make([]byte, batchHeaderLen, maxPayloadSize), // can grow larger than maxPayloadSize if writing huge header
 		close:        make(chan chan struct{}),
-		cur:          &MetricRef{},
-		w:            map[metricKey]*MetricRef{},
-		wn:           map[metricKeyNamed]*MetricRef{},
+		w:            map[metricKey]*bucket{},
+		wn:           map[metricKeyNamed]*bucket{},
 		env:          defaultEnv,
 		regularFuncs: map[int]func(*Client){},
+		tsUnixSec:    uint32(time.Now().Unix()),
 	}
 	go c.run()
 	return c
@@ -127,49 +151,59 @@ type NamedTags [][2]string
 // Tags are used to call [*Client.Metric].
 type Tags [maxTags]string
 
-type metricKeyValue struct {
-	k metricKey
-	v *MetricRef
-}
-
-type metricKeyValueNamed struct {
-	k metricKeyNamed
-	v *MetricRef
-}
-
 // Client manages metric aggregation and transport to a StatsHouse agent.
 type Client struct {
-	confMu  sync.Mutex
-	logf    LoggerFunc
-	network string
-	addr    string
-	conn    net.Conn
+	// logging
+	logMu sync.Mutex
+	logF  LoggerFunc
+	logT  time.Time // last write time, to reduce # of errors reported
 
-	writeErrTime time.Time // we use it to reduce # of errors reported
+	// transport
+	transportMu sync.RWMutex
+	env         string // if set, will be put into key0/env
+	network     string
+	addr        string
+	conn        net.Conn
+	packetBuf   []byte
+	batchCount  int
 
-	closeOnce  sync.Once
-	closeErr   error
-	close      chan chan struct{}
-	packetBuf  []byte
-	batchCount int
-	cur        *MetricRef
+	// data
+	mu        sync.RWMutex // taken after [bucket.mu]
+	w         map[metricKey]*bucket
+	r         []*bucket
+	wn        map[metricKeyNamed]*bucket
+	rn        []*bucket
+	tsUnixSec uint32
 
-	mu             sync.RWMutex
-	w              map[metricKey]*MetricRef
-	r              []metricKeyValue
-	wn             map[metricKeyNamed]*MetricRef
-	rn             []metricKeyValueNamed
-	env            string // if set, will be put into key0/env
+	// external callbacks
 	regularFuncsMu sync.Mutex
 	regularFuncs   map[int]func(*Client)
 	nextRegularID  int
+
+	// shutdown
+	closeOnce sync.Once
+	closeErr  error
+	close     chan chan struct{}
+
+	// debug
+	bucketCount *atomic.Int32
 }
 
 // SetEnv changes the default environment associated with [Client].
 func (c *Client) SetEnv(env string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.transportMu.Lock()
 	c.env = env
+	c.transportMu.Unlock()
+}
+
+// For debug purposes. If necessary then it should be first method called on [Client].
+func (c *Client) TrackBucketCount() {
+	c.bucketCount = &atomic.Int32{}
+}
+
+// For debug purposes. Panics if [Client.TrackBucketCount] wasn't called.
+func (c *Client) BucketCount() int32 {
+	return c.bucketCount.Load()
 }
 
 // Close the [Client] and flush unsent metrics to the StatsHouse agent.
@@ -180,8 +214,8 @@ func (c *Client) Close() error {
 		c.close <- ch
 		<-ch
 
-		c.confMu.Lock()
-		defer c.confMu.Unlock()
+		c.transportMu.Lock()
+		defer c.transportMu.Unlock()
 
 		if c.conn != nil {
 			c.closeErr = c.conn.Close()
@@ -215,7 +249,7 @@ func (c *Client) callRegularFuncs(regularCache []func(*Client)) []func(*Client) 
 	c.regularFuncsMu.Unlock()
 	defer func() {
 		if p := recover(); p != nil {
-			c.getLog()("[statshouse] panic inside regular measurement function, ignoring: %v", p)
+			c.rareLog("[statshouse] panic inside regular measurement function, ignoring: %v", p)
 		}
 	}()
 	for _, f := range regularCache { // called without locking to prevent deadlock
@@ -225,14 +259,17 @@ func (c *Client) callRegularFuncs(regularCache []func(*Client)) []func(*Client) 
 }
 
 func (c *Client) configure(logf LoggerFunc, network string, statsHouseAddr string, env string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	if logf == nil {
+		logf = log.Printf
+	}
+	// update logger first
+	c.logMu.Lock()
+	c.logF = logf
+	c.logMu.Unlock()
+	// then transport
+	c.transportMu.Lock()
+	defer c.transportMu.Unlock()
 	c.env = env
-
-	c.confMu.Lock()
-	defer c.confMu.Unlock()
-
-	c.logf = logf
 	c.network = network
 	c.addr = statsHouseAddr
 	if c.conn != nil {
@@ -241,63 +278,58 @@ func (c *Client) configure(logf LoggerFunc, network string, statsHouseAddr strin
 			logf("[statshouse] failed to close connection: %v", err)
 		}
 		c.conn = nil
-		c.writeErrTime = time.Time{}
 	}
 	if c.addr == "" {
-		c.logf("[statshouse] configured with empty address, all statistics will be silently dropped")
+		logf("[statshouse] configured with empty address, all statistics will be silently dropped")
 	}
 }
 
-func (c *Client) getLog() LoggerFunc {
-	c.confMu.Lock()
-	defer c.confMu.Unlock()
-	return c.logf // return func instead of calling it here to not alter the callstack information in the log
-}
-
-func tillNextHalfPeriod(now time.Time) time.Duration {
-	return now.Truncate(defaultSendPeriod).Add(defaultSendPeriod * 3 / 2).Sub(now)
+func (c *Client) rareLog(format string, args ...interface{}) {
+	c.logMu.Lock()
+	if time.Since(c.logT) < errorReportingPeriod {
+		c.logMu.Unlock()
+		return
+	}
+	logf := c.logF
+	c.logT = time.Now()
+	c.logMu.Unlock()
+	logf(format, args...)
 }
 
 func (c *Client) run() {
 	var regularCache []func(*Client)
-	tick := time.After(tillNextHalfPeriod(time.Now()))
+	// get a resettable timer
+	timer := time.NewTimer(time.Hour)
+	if !timer.Stop() {
+		<-timer.C
+	}
+	c.mu.Lock()
+	now := time.Unix(int64(c.tsUnixSec), 0)
+	c.mu.Unlock()
+	// loop
 	for {
+		timer.Reset(now.Truncate(defaultSendPeriod).Add(defaultSendPeriod).Sub(now))
 		select {
-		case now := <-tick:
+		case now = <-timer.C:
 			regularCache = c.callRegularFuncs(regularCache[:0])
-			c.send()
-			tick = time.After(tillNextHalfPeriod(now))
+			c.send(uint32(now.Unix()))
 		case ch := <-c.close:
-			c.send() // last send: we will lose all metrics produced "after"
+			c.send(0) // last send: we will lose all metrics produced "after"
 			close(ch)
 			return
 		}
+		now = time.Now()
 	}
 }
 
-func (c *Client) load() ([]metricKeyValue, []metricKeyValueNamed, string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	return c.r, c.rn, c.env
-}
-
-func (c *Client) swapToCur(s *MetricRef) {
-	n := atomicLoadFloat64(&s.atomicCount)
-	for !atomicCASFloat64(&s.atomicCount, n, 0) {
-		n = atomicLoadFloat64(&s.atomicCount)
-	}
-	atomicStoreFloat64(&c.cur.atomicCount, n)
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	c.cur.value = append(c.cur.value[:0], s.value...)
-	c.cur.unique = append(c.cur.unique[:0], s.unique...)
-	c.cur.stop = append(c.cur.stop[:0], s.stop...)
-	s.value = s.value[:0]
-	s.unique = s.unique[:0]
-	s.stop = s.stop[:0]
+func (b *bucket) swapToSend(nowUnixSec uint32) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.tsUnixSec = nowUnixSec
+	b.count, b.countToSend = 0, b.count
+	b.value, b.valueToSend = b.valueToSend[:0], b.value
+	b.unique, b.uniqueToSend = b.uniqueToSend[:0], b.unique
+	b.stop, b.stopToSend = b.stopToSend[:0], b.stop
 }
 
 type metricKeyTransport struct {
@@ -316,48 +348,110 @@ func fillTag(k *metricKeyTransport, tagName string, tagValue string) {
 	k.hasEnv = k.hasEnv || tagName == "0" || tagName == "env" || tagName == "key0" // TODO - keep only "0", rest are legacy
 }
 
-func (c *Client) send() {
-	ss, ssn, env := c.load()
-	for _, s := range ss {
-		k := metricKeyTransport{name: s.k.name}
-		for i, v := range s.k.tags {
-			fillTag(&k, tagIDs[i], v)
-		}
-		if !k.hasEnv {
-			fillTag(&k, "0", env)
-		}
-
-		c.swapToCur(s.v)
-		if n := atomicLoadFloat64(&c.cur.atomicCount); n > 0 {
-			c.sendCounter(&k, "", n, 0)
-		}
-		c.sendValues(&k, "", 0, 0, c.cur.value)
-		c.sendUniques(&k, "", 0, 0, c.cur.unique)
-		for _, skey := range c.cur.stop {
-			c.sendCounter(&k, skey, 1, 0)
-		}
+func (c *Client) send(nowUnixSec uint32) {
+	// load & switch second
+	c.mu.Lock()
+	ss, ssn := c.r, c.rn
+	sendUnixSec := c.tsUnixSec
+	c.tsUnixSec = nowUnixSec
+	c.mu.Unlock()
+	// swap
+	for i := 0; i < len(ss); i++ {
+		ss[i].swapToSend(nowUnixSec)
 	}
-	for _, s := range ssn {
-		k := metricKeyTransport{name: s.k.name}
-		for _, v := range s.k.tags {
-			fillTag(&k, v[0], v[1])
-		}
-		if !k.hasEnv {
-			fillTag(&k, "0", env)
-		}
-
-		c.swapToCur(s.v)
-		if n := atomicLoadFloat64(&c.cur.atomicCount); n > 0 {
-			c.sendCounter(&k, "", n, 0)
-		}
-		c.sendValues(&k, "", 0, 0, c.cur.value)
-		c.sendUniques(&k, "", 0, 0, c.cur.unique)
-		for _, skey := range c.cur.stop {
-			c.sendCounter(&k, skey, 1, 0)
-		}
+	for i := 0; i < len(ssn); i++ {
+		ssn[i].swapToSend(nowUnixSec)
 	}
-
+	// send
+	c.transportMu.Lock()
+	for i := 0; i < len(ss); i++ {
+		if ss[i].emptySend() {
+			continue
+		}
+		ss[i].send(c, sendUnixSec)
+	}
+	for i := 0; i < len(ssn); i++ {
+		if ssn[i].emptySend() {
+			continue
+		}
+		ssn[i].send(c, sendUnixSec)
+	}
 	c.flush()
+	c.transportMu.Unlock()
+	// remove unused & compact
+	i, n := 0, len(ss)
+	for i < n {
+		b := c.r[i]
+		if !b.emptySend() {
+			i++
+			b.emptySendCount = 0
+			continue
+		}
+		if b.emptySendCount < maxEmptySendCount {
+			i++
+			b.emptySendCount++
+			continue
+		} else {
+			b.emptySendCount = 0
+		}
+		// remove
+		b.mu.Lock()
+		c.mu.Lock()
+		c.w[b.k] = nil // release bucket reference
+		delete(c.w, b.k)
+		n--
+		c.r[i] = c.r[n]
+		c.r[n] = nil // release bucket reference
+		b.attached = false
+		c.mu.Unlock()
+		b.mu.Unlock()
+	}
+	if d := len(ss) - n; d != 0 {
+		c.mu.Lock()
+		for i := len(ss); i < len(c.r); i++ {
+			c.r[i-d] = c.r[i]
+			c.r[i] = nil // release bucket reference
+		}
+		c.r = c.r[:len(c.r)-d]
+		c.mu.Unlock()
+	}
+	// remove unused & compact (named)
+	i, n = 0, len(ssn)
+	for i < n {
+		b := c.rn[i]
+		if !b.emptySend() {
+			i++
+			b.emptySendCount = 0
+			continue
+		}
+		if b.emptySendCount < maxEmptySendCount {
+			i++
+			b.emptySendCount++
+			continue
+		} else {
+			b.emptySendCount = 0
+		}
+		// remove
+		b.mu.Lock()
+		c.mu.Lock()
+		c.wn[b.kn] = nil // release bucket reference
+		delete(c.wn, b.kn)
+		n--
+		c.rn[i] = c.rn[n]
+		c.rn[n] = nil // release bucket reference
+		b.attached = false
+		c.mu.Unlock()
+		b.mu.Unlock()
+	}
+	if d := len(ssn) - n; d != 0 {
+		c.mu.Lock()
+		for i := len(ssn); i < len(c.rn); i++ {
+			c.rn[i-d] = c.rn[i]
+			c.rn[i] = nil // release bucket reference
+		}
+		c.rn = c.rn[:len(c.rn)-d]
+		c.mu.Unlock()
+	}
 }
 
 func (c *Client) sendCounter(k *metricKeyTransport, skey string, counter float64, tsUnixSec uint32) {
@@ -419,13 +513,10 @@ func (c *Client) flush() {
 	c.packetBuf = c.packetBuf[:batchHeaderLen]
 	c.batchCount = 0
 
-	c.confMu.Lock()
-	defer c.confMu.Unlock()
-
 	if c.conn == nil && c.addr != "" {
 		conn, err := net.Dial(c.network, c.addr)
 		if err != nil {
-			c.logf("[statshouse] failed to dial statshouse: %v", err) // not using getLog() because confMu is already locked
+			c.rareLog("[statshouse] failed to dial statshouse: %v", err)
 			return
 		}
 		c.conn = conn
@@ -433,11 +524,7 @@ func (c *Client) flush() {
 	if c.conn != nil && c.addr != "" {
 		_, err := c.conn.Write(data)
 		if err != nil {
-			now := time.Now()
-			if now.Sub(c.writeErrTime) > errorReportingPeriod {
-				c.writeErrTime = now
-				c.logf("[statshouse] failed to send data to statshouse: %v", err) // not using getLog() because confMu is already locked
-			}
+			c.rareLog("[statshouse] failed to send data to statshouse: %v", err)
 		}
 	}
 }
@@ -490,7 +577,7 @@ func (c *Client) writeHeader(k *metricKeyTransport, skey string, counter float64
 		}
 	}
 	c.packetBuf = c.packetBuf[:wasLen]
-	c.getLog()("[statshouse] metric %q payload too big to fit into packet, discarding", k.name)
+	c.rareLog("[statshouse] metric %q payload too big to fit into packet, discarding", k.name)
 	return -1
 }
 
@@ -499,51 +586,40 @@ func (c *Client) writeTag(tagName string, tagValue string) {
 	c.packetBuf = basictl.StringWriteTruncated(c.packetBuf, tagValue)
 }
 
-// Metric is the preferred way to access [MetricRef] to record observations.
-// Metric calls should be encapsulated in helper functions. Direct calls like
+// MetricRef is the preferred way to record observations, save the result for later use:
 //
-//	statshouse.Metric("packet_size", statshouse.Tags{1: "ok"}).Value(float64(len(pkg)))
-//
-// should be replaced with calls via higher-level helper functions:
-//
-//	RecordPacketSize(true, len(pkg))
-//
-//	func RecordPacketSize(ok bool, size int) {
-//	    status := "fail"
-//	    if ok {
-//	        status = "ok"
-//	    }
-//	    statshouse.Metric("packet_size", statshouse.Tags{1: status}).Value(float64(size))
-//	}
-//
-// As an optimization, it is possible to save the result of Metric for later use:
-//
-//	var countPacketOK = statshouse.Metric("foo", statshouse.Tags{1: "ok"})
-//
+//	var countPacketOK = statshouse.GetMetricRef("foo", statshouse.Tags{1: "ok"})
 //	countPacketOK.Count(1)  // lowest overhead possible
-func (c *Client) Metric(metric string, tags Tags) *MetricRef {
+func (c *Client) MetricRef(metric string, tags Tags) MetricRef {
 	// We must do absolute minimum of work here
 	k := metricKey{name: metric, tags: tags}
 	c.mu.RLock()
 	e, ok := c.w[k]
 	c.mu.RUnlock()
 	if ok {
-		return e
+		return MetricRef{e}
 	}
-
 	c.mu.Lock()
-	e, ok = c.w[k]
-	if !ok {
-		e = &MetricRef{}
-		c.w[k] = e
-		c.r = append(c.r, metricKeyValue{k: k, v: e})
+	defer c.mu.Unlock()
+	b := &bucket{
+		c:         c,
+		k:         k,
+		tsUnixSec: c.tsUnixSec,
+		attached:  true,
 	}
-	c.mu.Unlock()
-	return e
+	if c.bucketCount != nil {
+		c.bucketCount.Add(1)
+		runtime.SetFinalizer(b, func(_ *bucket) {
+			c.bucketCount.Add(-1)
+		})
+	}
+	c.w[k] = b
+	c.r = append(c.r, b)
+	return MetricRef{b}
 }
 
-// MetricNamed is similar to [*Client.Metric] but slightly slower, and allows to specify tags by name.
-func (c *Client) MetricNamed(metric string, tags NamedTags) *MetricRef {
+// MetricNamedRef is similar to [*Client.MetricRef] but slightly slower, and allows to specify tags by name.
+func (c *Client) MetricNamedRef(metric string, tags NamedTags) MetricRef {
 	// We must do absolute minimum of work here
 	k := metricKeyNamed{name: metric}
 	copy(k.tags[:], tags)
@@ -552,90 +628,344 @@ func (c *Client) MetricNamed(metric string, tags NamedTags) *MetricRef {
 	e, ok := c.wn[k]
 	c.mu.RUnlock()
 	if ok {
-		return e
+		return MetricRef{e}
 	}
-
 	c.mu.Lock()
-	e, ok = c.wn[k]
-	if !ok {
-		e = &MetricRef{}
-		c.wn[k] = e
-		c.rn = append(c.rn, metricKeyValueNamed{k: k, v: e})
+	defer c.mu.Unlock()
+	b := &bucket{
+		c:         c,
+		kn:        k,
+		tsUnixSec: c.tsUnixSec,
+		attached:  true,
 	}
-	c.mu.Unlock()
-	return e
+	if c.bucketCount != nil {
+		c.bucketCount.Add(1)
+		runtime.SetFinalizer(b, func(_ *bucket) {
+			c.bucketCount.Add(-1)
+		})
+	}
+	c.wn[k] = b
+	c.rn = append(c.rn, b)
+	return MetricRef{b}
+}
+
+// Deprecated: causes unnecessary memory allocation.
+// Use either [Client.MetricRef] or direct write func like [Client.Count].
+func (c *Client) Metric(metric string, tags Tags) *MetricRef {
+	v := c.MetricRef(metric, tags)
+	return &v
+}
+
+// Deprecated: causes unnecessary memory allocation.
+// Use either [Client.MetricNamedRef] or direct write func like [Client.Count].
+func (c *Client) MetricNamed(metric string, tags NamedTags) *MetricRef {
+	v := c.MetricNamedRef(metric, tags)
+	return &v
 }
 
 // MetricRef pointer is obtained via [*Client.Metric] or [*Client.MetricNamed]
 // and is used to record attributes of observed events.
 type MetricRef struct {
-	// Place atomics first to ensure proper alignment, see https://pkg.go.dev/sync/atomic#pkg-note-BUG
-	atomicCount uint64
+	*bucket
+}
 
-	mu     sync.Mutex
-	value  []float64
-	unique []int64
-	stop   []string
+type bucket struct {
+	// readonly
+	c  *Client
+	k  metricKey
+	kn metricKeyNamed
+
+	mu        sync.Mutex // taken before [Client.mu]
+	tsUnixSec uint32
+	attached  bool
+	count     float64
+	value     []float64
+	unique    []int64
+	stop      []string
+
+	// access only by "send" goroutine, not protected
+	countToSend    float64
+	valueToSend    []float64
+	uniqueToSend   []int64
+	stopToSend     []string
+	emptySendCount int
 }
 
 // Count records the number of events or observations.
 func (m *MetricRef) Count(n float64) {
-	c := atomicLoadFloat64(&m.atomicCount)
-	for !atomicCASFloat64(&m.atomicCount, c, c+n) {
-		c = atomicLoadFloat64(&m.atomicCount)
-	}
+	m.CountHistoric(n, 0)
+}
+
+func (m *MetricRef) CountHistoric(n float64, tsUnixSec uint32) {
+	m.write(tsUnixSec, func(b *bucket) {
+		b.count += n
+	})
+}
+
+func (c *Client) Count(name string, tags Tags, n float64) {
+	m := c.MetricRef(name, tags)
+	m.Count(n)
+}
+
+func (c *Client) CountHistoric(name string, tags Tags, n float64, tsUnixSec uint32) {
+	m := c.MetricRef(name, tags)
+	m.CountHistoric(n, tsUnixSec)
+}
+
+func (c *Client) NamedCount(name string, tags NamedTags, n float64) {
+	m := c.MetricNamedRef(name, tags)
+	m.Count(n)
+}
+
+func (c *Client) NamedCountHistoric(name string, tags NamedTags, n float64, tsUnixSec uint32) {
+	m := c.MetricNamedRef(name, tags)
+	m.CountHistoric(n, tsUnixSec)
 }
 
 // Value records the observed value for distribution estimation.
 func (m *MetricRef) Value(value float64) {
-	m.mu.Lock()
-	m.value = append(m.value, value)
-	m.mu.Unlock()
+	m.ValueHistoric(value, 0)
+}
+
+func (m *MetricRef) ValueHistoric(value float64, tsUnixSec uint32) {
+	m.write(tsUnixSec, func(b *bucket) {
+		b.value = append(b.value, value)
+	})
+}
+
+func (c *Client) Value(name string, tags Tags, value float64) {
+	m := c.MetricRef(name, tags)
+	m.Value(value)
+}
+
+func (c *Client) ValueHistoric(name string, tags Tags, value float64, tsUnixSec uint32) {
+	m := c.MetricRef(name, tags)
+	m.ValueHistoric(value, tsUnixSec)
+}
+
+func (c *Client) NamedValue(name string, tags NamedTags, value float64) {
+	m := c.MetricNamedRef(name, tags)
+	m.Value(value)
+}
+
+func (c *Client) NamedValueHistoric(name string, tags NamedTags, value float64, tsUnixSec uint32) {
+	m := c.MetricNamedRef(name, tags)
+	m.ValueHistoric(value, tsUnixSec)
 }
 
 // Values records the observed values for distribution estimation.
 func (m *MetricRef) Values(values []float64) {
-	m.mu.Lock()
-	m.value = append(m.value, values...)
-	m.mu.Unlock()
+	m.write(0, func(b *bucket) {
+		b.value = append(b.value, values...)
+	})
+}
+
+func (m *MetricRef) ValuesHistoric(values []float64, tsUnixSec uint32) {
+	m.write(tsUnixSec, func(b *bucket) {
+		b.value = append(b.value, values...)
+	})
+}
+
+func (c *Client) Values(name string, tags Tags, values []float64) {
+	m := c.MetricRef(name, tags)
+	m.Values(values)
+}
+
+func (c *Client) ValuesHistoric(name string, tags Tags, values []float64, tsUnixSec uint32) {
+	m := c.MetricRef(name, tags)
+	m.ValuesHistoric(values, tsUnixSec)
+}
+
+func (c *Client) NamedValues(name string, tags NamedTags, values []float64) {
+	m := c.MetricNamedRef(name, tags)
+	m.Values(values)
+}
+
+func (c *Client) NamedValuesHistoric(name string, tags NamedTags, values []float64, tsUnixSec uint32) {
+	m := c.MetricNamedRef(name, tags)
+	m.ValuesHistoric(values, tsUnixSec)
 }
 
 // Unique records the observed value for cardinality estimation.
 func (m *MetricRef) Unique(value int64) {
-	m.mu.Lock()
-	m.unique = append(m.unique, value)
-	m.mu.Unlock()
+	m.write(0, func(b *bucket) {
+		b.unique = append(b.unique, value)
+	})
+}
+
+func (m *MetricRef) UniqueHistoric(value int64, tsUnixSec uint32) {
+	m.write(tsUnixSec, func(b *bucket) {
+		b.unique = append(b.unique, value)
+	})
+}
+
+func (c *Client) Unique(name string, tags Tags, value int64) {
+	m := c.MetricRef(name, tags)
+	m.Unique(value)
+}
+
+func (c *Client) UniqueHistoric(name string, tags Tags, value int64, tsUnixSec uint32) {
+	m := c.MetricRef(name, tags)
+	m.UniqueHistoric(value, tsUnixSec)
+}
+
+func (c *Client) NamedUnique(name string, tags NamedTags, value int64) {
+	m := c.MetricNamedRef(name, tags)
+	m.Unique(value)
+}
+
+func (c *Client) NamedUniqueHistoric(name string, tags NamedTags, value int64, tsUnixSec uint32) {
+	m := c.MetricNamedRef(name, tags)
+	m.UniqueHistoric(value, tsUnixSec)
 }
 
 // Uniques records the observed values for cardinality estimation.
 func (m *MetricRef) Uniques(values []int64) {
-	m.mu.Lock()
-	m.unique = append(m.unique, values...)
-	m.mu.Unlock()
+	m.write(0, func(b *bucket) {
+		b.unique = append(b.unique, values...)
+	})
+}
+
+func (m *MetricRef) UniquesHistoric(values []int64, tsUnixSec uint32) {
+	m.write(tsUnixSec, func(b *bucket) {
+		b.unique = append(b.unique, values...)
+	})
+}
+
+func (c *Client) Uniques(name string, tags Tags, values []int64) {
+	m := c.MetricRef(name, tags)
+	m.Uniques(values)
+}
+
+func (c *Client) UniquesHistoric(name string, tags Tags, values []int64, tsUnixSec uint32) {
+	m := c.MetricRef(name, tags)
+	m.UniquesHistoric(values, tsUnixSec)
+}
+
+func (c *Client) NamedUniques(name string, tags NamedTags, values []int64) {
+	m := c.MetricNamedRef(name, tags)
+	m.Uniques(values)
+}
+
+func (c *Client) NamedUniquesHistoric(name string, tags NamedTags, values []int64, tsUnixSec uint32) {
+	m := c.MetricNamedRef(name, tags)
+	m.UniquesHistoric(values, tsUnixSec)
 }
 
 // StringTop records the observed value for popularity estimation.
 func (m *MetricRef) StringTop(value string) {
-	m.mu.Lock()
-	m.stop = append(m.stop, value)
-	m.mu.Unlock()
+	m.write(0, func(b *bucket) {
+		b.stop = append(b.stop, value)
+	})
 }
 
 // StringsTop records the observed values for popularity estimation.
 func (m *MetricRef) StringsTop(values []string) {
+	m.write(0, func(b *bucket) {
+		b.stop = append(b.stop, values...)
+	})
+}
+
+func (m *MetricRef) write(tsUnixSec uint32, fn func(*bucket)) {
 	m.mu.Lock()
-	m.stop = append(m.stop, values...)
+	tsZeroOrEqual := tsUnixSec == 0 || m.tsUnixSec <= tsUnixSec
+	if m.attached && tsZeroOrEqual {
+		// fast path
+		fn(m.bucket)
+		m.mu.Unlock()
+		return
+	}
+	c := m.c
+	if !tsZeroOrEqual {
+		m.mu.Unlock()
+		var b bucket
+		fn(&b)
+		c.transportMu.Lock()
+		b.send(c, tsUnixSec)
+		c.transportMu.Unlock()
+		return
+	}
+	// attach then write
+	for i := 0; i < 2; i++ {
+		var b *bucket
+		var emptyMetricName bool
+		c.mu.Lock()
+		if m.k.name != "" {
+			if b = c.w[m.k]; b == nil {
+				fn(m.bucket)
+				c.w[m.k] = m.bucket
+				c.r = append(c.r, m.bucket)
+				m.tsUnixSec = c.tsUnixSec
+				m.attached = true // attach current
+			}
+		} else if m.kn.name != "" {
+			if b = c.wn[m.kn]; b == nil {
+				fn(m.bucket)
+				c.wn[m.kn] = m.bucket
+				c.rn = append(c.rn, m.bucket)
+				m.tsUnixSec = c.tsUnixSec
+				m.attached = true // attach current
+			}
+		} else {
+			emptyMetricName = true
+		}
+		c.mu.Unlock()
+		if emptyMetricName {
+			m.mu.Unlock()
+			c.rareLog("[statshouse] empty metric name, discarding")
+			return
+		}
+		if m.attached { // attached current
+			fn(m.bucket)
+			m.mu.Unlock()
+			return
+		}
+		m.mu.Unlock()
+		m.bucket = b
+		// now state is equvalent to what it was at function invocation, start over
+		m.mu.Lock()
+		if m.attached {
+			fn(b)
+			m.mu.Unlock()
+			return
+		}
+	}
 	m.mu.Unlock()
+	c.rareLog("[statshouse] send safety counter limit reached, discarding")
 }
 
-func atomicLoadFloat64(addr *uint64) float64 {
-	return math.Float64frombits(atomic.LoadUint64(addr))
+func (b *bucket) send(c *Client, tsUnixSec uint32) {
+	var k metricKeyTransport
+	if b.k.name != "" {
+		k.name = b.k.name
+		for i, v := range b.k.tags {
+			fillTag(&k, tagIDs[i], v)
+		}
+	} else if b.kn.name != "" {
+		k.name = b.kn.name
+		for _, v := range b.kn.tags {
+			fillTag(&k, v[0], v[1])
+		}
+	} else {
+		c.rareLog("[statshouse] empty metric name, discarding")
+		return
+	}
+	if !k.hasEnv {
+		fillTag(&k, "0", c.env)
+	}
+	if b.countToSend > 0 {
+		c.sendCounter(&k, "", b.countToSend, tsUnixSec)
+	}
+	c.sendValues(&k, "", 0, tsUnixSec, b.valueToSend)
+	c.sendUniques(&k, "", 0, tsUnixSec, b.uniqueToSend)
+	for _, skey := range b.stopToSend {
+		c.sendCounter(&k, skey, 1, tsUnixSec)
+	}
 }
 
-func atomicStoreFloat64(addr *uint64, val float64) {
-	atomic.StoreUint64(addr, math.Float64bits(val))
-}
-
-func atomicCASFloat64(addr *uint64, old float64, new float64) (swapped bool) {
-	return atomic.CompareAndSwapUint64(addr, math.Float64bits(old), math.Float64bits(new))
+func (b *bucket) emptySend() bool {
+	return b.countToSend == 0 &&
+		len(b.valueToSend) == 0 &&
+		len(b.uniqueToSend) == 0 &&
+		len(b.stopToSend) == 0
 }

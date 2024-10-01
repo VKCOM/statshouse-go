@@ -7,9 +7,15 @@
 package statshouse_test
 
 import (
+	"context"
+	"fmt"
+	"runtime"
+	"strconv"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/stretchr/testify/require"
 	"github.com/vkcom/statshouse-go"
 )
 
@@ -22,27 +28,70 @@ func TestCountRace(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 1000; j++ {
-				c.Metric("test_stat", statshouse.Tags{1: "hello", 2: "world"}).Count(float64(j))
+				c.Count("test_stat", statshouse.Tags{1: "hello", 2: "world"}, float64(j))
 			}
 		}()
 	}
 	wg.Wait()
 }
 
+func TestBucketRelease(t *testing.T) {
+	var wg sync.WaitGroup
+	c := statshouse.NewClient(t.Logf, "udp", "" /* avoid sending anything */, "")
+	c.TrackBucketCount()
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(time.Second))
+	defer cancel()
+	for i := 1; i <= 10; i++ {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			name := fmt.Sprintf("test_metric%d", i)
+			var tags statshouse.NamedTags
+			for j := 0; j < i; j++ {
+				tags = append(tags, [2]string{strconv.Itoa(j), fmt.Sprintf("name%d", j)})
+			}
+			n := 0
+			for ; ctx.Err() == nil; n++ {
+				c.MetricNamed(name, tags).Count(float64(i))
+			}
+			t.Logf("send # %d", n)
+		}(i)
+		go func(i int) {
+			defer wg.Done()
+			name := fmt.Sprintf("test_metric%d", i)
+			var tags statshouse.Tags
+			for j := 0; j < i; j++ {
+				tags[j] = strconv.Itoa(j)
+			}
+			n := 0
+			for ; ctx.Err() == nil; n++ {
+				c.Metric(name, tags).Count(float64(i))
+			}
+			t.Logf("send # %d", n)
+		}(i)
+	}
+	wg.Wait()
+	runtime.GC()
+	for i := 0; i < 10 && c.BucketCount() != 0; i++ {
+		time.Sleep(time.Second)
+		runtime.GC()
+	}
+	require.Zero(t, c.BucketCount())
+}
+
 func BenchmarkValue2(b *testing.B) {
 	c := statshouse.NewClient(b.Logf, "udp", "" /* avoid sending anything */, "")
+	defer c.Close()
 	b.ResetTimer()
-
 	for i := 0; i < b.N; i++ {
-		c.Metric("test_stat", statshouse.Tags{1: "hello", 2: "world"}).Value(float64(i))
+		c.Value("test_stat", statshouse.Tags{1: "hello", 2: "world"}, float64(i))
 	}
 }
 
 func BenchmarkRawValue(b *testing.B) {
 	c := statshouse.NewClient(b.Logf, "udp", "" /* avoid sending anything */, "")
-	s := c.Metric("test_stat", statshouse.Tags{1: "hello", 2: "world"})
+	s := c.MetricRef("test_stat", statshouse.Tags{1: "hello", 2: "world"})
 	b.ResetTimer()
-
 	for i := 0; i < b.N; i++ {
 		s.Value(float64(i))
 	}
@@ -53,13 +102,13 @@ func BenchmarkCount4(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		c.Metric("test_stat", statshouse.Tags{1: "hello", 2: "brave", 3: "new", 4: "world"}).Count(float64(i))
+		c.Count("test_stat", statshouse.Tags{1: "hello", 2: "brave", 3: "new", 4: "world"}, float64(i))
 	}
 }
 
 func BenchmarkRawCount(b *testing.B) {
 	c := statshouse.NewClient(b.Logf, "udp", "" /* avoid sending anything */, "")
-	s := c.Metric("test_stat", statshouse.Tags{1: "hello", 2: "brave", 3: "new", 4: "world"})
+	s := c.MetricRef("test_stat", statshouse.Tags{1: "hello", 2: "brave", 3: "new", 4: "world"})
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
@@ -72,13 +121,13 @@ func BenchmarkLabeledValue2(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		c.MetricNamed("test_stat", statshouse.NamedTags{{"hello", "world"}, {"world", "hello"}}).Value(float64(i))
+		c.NamedValue("test_stat", statshouse.NamedTags{{"hello", "world"}, {"world", "hello"}}, float64(i))
 	}
 }
 
 func BenchmarkRawLabeledValue(b *testing.B) {
 	c := statshouse.NewClient(b.Logf, "udp", "" /* avoid sending anything */, "")
-	s := c.MetricNamed("test_stat", statshouse.NamedTags{{"hello", "world"}, {"world", "hello"}})
+	s := c.MetricNamedRef("test_stat", statshouse.NamedTags{{"hello", "world"}, {"world", "hello"}})
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
@@ -91,13 +140,13 @@ func BenchmarkLabeledCount4(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		c.MetricNamed("test_stat", statshouse.NamedTags{{"hello", "world"}, {"world", "hello"}, {"hello1", "world"}, {"world1", "hello"}}).Count(float64(i))
+		c.NamedCount("test_stat", statshouse.NamedTags{{"hello", "world"}, {"world", "hello"}, {"hello1", "world"}, {"world1", "hello"}}, float64(i))
 	}
 }
 
 func BenchmarkRawLabeledCount(b *testing.B) {
 	c := statshouse.NewClient(b.Logf, "udp", "" /* avoid sending anything */, "")
-	s := c.MetricNamed("test_stat", statshouse.NamedTags{{"hello", "world"}, {"world", "hello"}, {"hello1", "world"}, {"world1", "hello"}})
+	s := c.MetricNamedRef("test_stat", statshouse.NamedTags{{"hello", "world"}, {"world", "hello"}, {"hello1", "world"}, {"world1", "hello"}})
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {

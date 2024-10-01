@@ -19,5 +19,6 @@ jobs:
           args: --timeout=10m --disable-all -E goimports
       - uses: dominikh/staticcheck-action@v1.2.0
         with:
+          version: v0.4.7
           install-go: false
       - run: go test -v ./...
