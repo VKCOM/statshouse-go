@@ -461,7 +461,7 @@ func (c *Client) send(nowUnixSec uint32) {
 	// remove unused & compact
 	i, n := 0, len(ss)
 	for i < n {
-		b := c.r[i]
+		b := ss[i]
 		if !b.emptySend() {
 			i++
 			b.emptySendCount = 0
@@ -498,7 +498,7 @@ func (c *Client) send(nowUnixSec uint32) {
 	// remove unused & compact (named)
 	i, n = 0, len(ssn)
 	for i < n {
-		b := c.rn[i]
+		b := ssn[i]
 		if !b.emptySend() {
 			i++
 			b.emptySendCount = 0
