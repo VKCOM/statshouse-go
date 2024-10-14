@@ -95,6 +95,86 @@ func MetricNamed(metric string, tags NamedTags) *MetricRef {
 	return globalClient.MetricNamed(metric, tags)
 }
 
+func Count(name string, tags Tags, n float64) {
+	globalClient.Count(name, tags, n)
+}
+
+func CountHistoric(name string, tags Tags, n float64, tsUnixSec uint32) {
+	globalClient.CountHistoric(name, tags, n, tsUnixSec)
+}
+
+func NamedCount(name string, tags NamedTags, n float64) {
+	globalClient.NamedCount(name, tags, n)
+}
+
+func NamedCountHistoric(name string, tags NamedTags, n float64, tsUnixSec uint32) {
+	globalClient.NamedCountHistoric(name, tags, n, tsUnixSec)
+}
+
+func Value(name string, tags Tags, value float64) {
+	globalClient.Value(name, tags, value)
+}
+
+func ValueHistoric(name string, tags Tags, value float64, tsUnixSec uint32) {
+	globalClient.ValueHistoric(name, tags, value, tsUnixSec)
+}
+
+func NamedValue(name string, tags NamedTags, value float64) {
+	globalClient.NamedValue(name, tags, value)
+}
+
+func NamedValueHistoric(name string, tags NamedTags, value float64, tsUnixSec uint32) {
+	globalClient.NamedValueHistoric(name, tags, value, tsUnixSec)
+}
+
+func Unique(name string, tags Tags, value int64) {
+	globalClient.Unique(name, tags, value)
+}
+
+func UniqueHistoric(name string, tags Tags, value int64, tsUnixSec uint32) {
+	globalClient.UniqueHistoric(name, tags, value, tsUnixSec)
+}
+
+func NamedUnique(name string, tags NamedTags, value int64) {
+	globalClient.NamedUnique(name, tags, value)
+}
+
+func NamedUniqueHistoric(name string, tags NamedTags, value int64, tsUnixSec uint32) {
+	globalClient.NamedUniqueHistoric(name, tags, value, tsUnixSec)
+}
+
+func StringTop(name string, tags Tags, value string) {
+	globalClient.StringTop(name, tags, value)
+}
+
+func StringTopHistoric(name string, tags Tags, value string, tsUnixSec uint32) {
+	globalClient.StringTopHistoric(name, tags, value, tsUnixSec)
+}
+
+func NamedStringTop(name string, tags NamedTags, value string) {
+	globalClient.NamedStringTop(name, tags, value)
+}
+
+func NamedStringTopHistoric(name string, tags NamedTags, value string, tsUnixSec uint32) {
+	globalClient.NamedStringTopHistoric(name, tags, value, tsUnixSec)
+}
+
+func StringsTop(name string, tags Tags, values []string) {
+	globalClient.StringsTop(name, tags, values)
+}
+
+func StringsTopHistoric(name string, tags Tags, values []string, tsUnixSec uint32) {
+	globalClient.StringsTopHistoric(name, tags, values, tsUnixSec)
+}
+
+func NamedStringsTop(name string, tags NamedTags, values []string) {
+	globalClient.NamedStringsTop(name, tags, values)
+}
+
+func NamedStringsTopHistoric(name string, tags NamedTags, values []string, tsUnixSec uint32) {
+	globalClient.NamedStringsTopHistoric(name, tags, values, tsUnixSec)
+}
+
 // StartRegularMeasurement calls [*Client.StartRegularMeasurement] on the global [Client].
 // It is valid to call StartRegularMeasurement before [Configure].
 func StartRegularMeasurement(f func(*Client)) (id int) {
@@ -859,11 +939,63 @@ func (m *MetricRef) StringTop(value string) {
 	})
 }
 
+func (m *MetricRef) StringTopHistoric(value string, tsUnixSec uint32) {
+	m.write(tsUnixSec, func(b *bucket) {
+		b.stop = append(b.stop, value)
+	})
+}
+
+func (c *Client) StringTop(name string, tags Tags, value string) {
+	m := c.MetricRef(name, tags)
+	m.StringTop(value)
+}
+
+func (c *Client) StringTopHistoric(name string, tags Tags, value string, tsUnixSec uint32) {
+	m := c.MetricRef(name, tags)
+	m.StringTopHistoric(value, tsUnixSec)
+}
+
+func (c *Client) NamedStringTop(name string, tags NamedTags, value string) {
+	m := c.MetricNamedRef(name, tags)
+	m.StringTop(value)
+}
+
+func (c *Client) NamedStringTopHistoric(name string, tags NamedTags, value string, tsUnixSec uint32) {
+	m := c.MetricNamedRef(name, tags)
+	m.StringTopHistoric(value, tsUnixSec)
+}
+
 // StringsTop records the observed values for popularity estimation.
 func (m *MetricRef) StringsTop(values []string) {
 	m.write(0, func(b *bucket) {
 		b.stop = append(b.stop, values...)
 	})
+}
+
+func (m *MetricRef) StringsTopHistoric(values []string, tsUnixSec uint32) {
+	m.write(tsUnixSec, func(b *bucket) {
+		b.stop = append(b.stop, values...)
+	})
+}
+
+func (c *Client) StringsTop(name string, tags Tags, values []string) {
+	m := c.MetricRef(name, tags)
+	m.StringsTop(values)
+}
+
+func (c *Client) StringsTopHistoric(name string, tags Tags, values []string, tsUnixSec uint32) {
+	m := c.MetricRef(name, tags)
+	m.StringsTopHistoric(values, tsUnixSec)
+}
+
+func (c *Client) NamedStringsTop(name string, tags NamedTags, values []string) {
+	m := c.MetricNamedRef(name, tags)
+	m.StringsTop(values)
+}
+
+func (c *Client) NamedStringsTopHistoric(name string, tags NamedTags, values []string, tsUnixSec uint32) {
+	m := c.MetricNamedRef(name, tags)
+	m.StringsTopHistoric(values, tsUnixSec)
 }
 
 func (m *MetricRef) write(tsUnixSec uint32, fn func(*bucket)) {
