@@ -8,7 +8,9 @@ package statshouse
 
 import (
 	"encoding/binary"
+	"fmt"
 	"log"
+	"math"
 	"net"
 	"runtime"
 	"sync"
@@ -20,11 +22,10 @@ import (
 
 const (
 	DefaultAddr    = "127.0.0.1:13337"
-	DefaultNetwork = "udp"
+	DefaultNetwork = "tcp"
 
 	defaultSendPeriod    = 1 * time.Second
 	errorReportingPeriod = time.Minute
-	maxPayloadSize       = 1232 // IPv6 mandated minimum MTU size of 1280 (minus 40 byte IPv6 header and 8 byte UDP header)
 	tlInt32Size          = 4
 	tlInt64Size          = 8
 	tlFloat64Size        = 8
@@ -33,16 +34,30 @@ const (
 	valueFieldsMask      = uint32(1 << 1)
 	uniqueFieldsMask     = uint32(1 << 2)
 	tsFieldsMask         = uint32(1 << 4)
-	batchHeaderLen       = 3 * tlInt32Size // tag, fields_mask, # of batches
+	batchHeaderLen       = 4 * tlInt32Size // data length (for TCP), tag, fields_mask, # of batches
 	maxTags              = 16
-	maxEmptySendCount    = 2 // before bucket detach
+	maxEmptySendCount    = 2   // before bucket detach
+	tcpConnBucketCount   = 512 // 32 MiB max TCP send buffer size
 )
 
 var (
-	globalClient = NewClient(log.Printf, DefaultNetwork, DefaultAddr, "")
+	globalClient       = NewClient(log.Printf, DefaultNetwork, DefaultAddr, "")
+	errWouldBlock      = fmt.Errorf("would block")
+	errWriteAfterClose = fmt.Errorf("write after close")
 
 	tagIDs = [maxTags]string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"}
 )
+
+func maxPayloadSize(network string) int {
+	switch network {
+	case "tcp":
+		return math.MaxUint16
+	default:
+		// "udp" or "unixgram"
+		// IPv6 mandated minimum MTU size of 1280 (minus 40 byte IPv6 header and 8 byte UDP header)
+		return 1232
+	}
+}
 
 type LoggerFunc func(format string, args ...interface{})
 
@@ -52,7 +67,7 @@ func Configure(logf LoggerFunc, statsHouseAddr string, defaultEnv string) {
 	globalClient.configure(logf, DefaultNetwork, statsHouseAddr, defaultEnv)
 }
 
-// network must be either "udp" or "unixgram"
+// network must be either "tcp", "udp" or "unixgram"
 func ConfigureNetwork(logf LoggerFunc, network string, statsHouseAddr string, defaultEnv string) {
 	globalClient.configure(logf, network, statsHouseAddr, defaultEnv)
 }
@@ -197,11 +212,15 @@ func NewClient(logf LoggerFunc, network string, statsHouseAddr string, defaultEn
 	if logf == nil {
 		logf = log.Printf
 	}
+	maxSize := maxPayloadSize(network)
 	c := &Client{
-		logF:         logf,
-		addr:         statsHouseAddr,
-		network:      network,
-		packetBuf:    make([]byte, batchHeaderLen, maxPayloadSize), // can grow larger than maxPayloadSize if writing huge header
+		logF:    logf,
+		addr:    statsHouseAddr,
+		network: network,
+		packet: packet{
+			buf:     make([]byte, batchHeaderLen, maxSize),
+			maxSize: maxSize,
+		},
 		close:        make(chan chan struct{}),
 		w:            map[metricKey]*bucket{},
 		wn:           map[metricKeyNamed]*bucket{},
@@ -243,9 +262,8 @@ type Client struct {
 	env         string // if set, will be put into key0/env
 	network     string
 	addr        string
-	conn        net.Conn
-	packetBuf   []byte
-	batchCount  int
+	conn        netConn
+	packet
 
 	// data
 	mu        sync.RWMutex // taken after [bucket.mu]
@@ -267,6 +285,162 @@ type Client struct {
 
 	// debug
 	bucketCount *atomic.Int32
+}
+
+type packet struct {
+	buf        []byte
+	maxSize    int
+	batchCount int
+}
+
+type netConn interface {
+	Write(b []byte) ([]byte, error)
+	Close() error
+}
+
+type datagramConn struct { // either UDP or unixgram
+	net.Conn
+}
+
+type tcpConn struct {
+	wouldBlockSize atomic.Int32
+
+	*Client
+	env string
+	net.Conn
+
+	w chan []byte
+	r chan []byte
+
+	closed   bool
+	closeErr chan error
+}
+
+func (c *Client) netDial(env, network, addr string) (netConn, error) {
+	conn, err := net.Dial(network, addr)
+	if err != nil {
+		c.rareLog("[statshouse] failed to dial statshouse: %v", err)
+		return nil, err
+	}
+	if network != "tcp" {
+		return &datagramConn{Conn: conn}, nil
+	}
+	_, err = conn.Write([]byte("statshousev1"))
+	if err != nil {
+		c.rareLog("[statshouse] failed to send header to statshouse: %v", err)
+		conn.Close()
+		return nil, err
+	}
+	t := &tcpConn{
+		Client:   c,
+		env:      env,
+		Conn:     conn,
+		r:        make(chan []byte, tcpConnBucketCount),
+		w:        make(chan []byte, tcpConnBucketCount),
+		closeErr: make(chan error),
+	}
+	go t.send()
+	return t, nil
+}
+
+func (t *tcpConn) read(b []byte) []byte {
+	res := <-t.w
+	if len(res) != 0 && len(b) != 0 {
+		t.r <- b
+	}
+	return res
+}
+
+func (t *tcpConn) Write(b []byte) (_ []byte, err error) {
+	if len(b) == 0 {
+		return b, nil
+	}
+	if t.closed {
+		return b, errWriteAfterClose
+	}
+	n := cap(b)
+	select {
+	case t.w <- b:
+		select {
+		case v := <-t.r:
+			b = v
+		default:
+			b = make([]byte, n)
+		}
+		return b, nil
+	default:
+		t.wouldBlockSize.Add(int32(len(b)))
+		return b, errWouldBlock
+	}
+}
+
+func (t *tcpConn) Close() error {
+	t.closed = true
+	close(t.w)
+	return <-t.closeErr
+}
+
+func (t *tcpConn) send() {
+	var buf []byte
+	var err error          // last write or connect error
+	var dialTime time.Time // time of last reconnect start
+	for {
+		if err != nil {
+			// reconnect (no more than once per second)
+			_ = t.Conn.Close()
+			time.Sleep(time.Second - time.Since(dialTime))
+			dialTime = time.Now()
+			var conn net.Conn
+			conn, err = net.Dial("tcp", t.RemoteAddr().String())
+			if err != nil {
+				t.rareLog("[statshouse] failed to dial statshouse: %v", err)
+				continue
+			}
+			_, err = conn.Write([]byte("statshousev1"))
+			if err != nil {
+				t.rareLog("[statshouse] failed to send header to statshouse: %v", err)
+				conn.Close()
+				continue
+			}
+			t.Conn = conn
+		}
+		if buf = t.read(buf); len(buf) == 0 {
+			break
+		}
+		if _, err = t.Conn.Write(buf); err != nil {
+			t.rareLog("[statshouse] failed to send data to statshouse: %v", err)
+			continue // reconnect and send again
+		}
+		if n := t.wouldBlockSize.Swap(0); n != 0 {
+			// report data loss
+			t.rareLog("[statshouse] lost %v bytes", n)
+			p := packet{
+				buf:     buf[:batchHeaderLen],
+				maxSize: cap(buf),
+			}
+			k := metricKeyTransport{
+				name: "__src_client_write_err",
+			}
+			fillTag(&k, "0", t.env)
+			fillTag(&k, "1", "1") // lang: golang
+			fillTag(&k, "2", "1") // kind: would block
+			p.sendValues(nil, &k, "", 0, 0, []float64{float64(n)})
+			p.writeBatchHeader()
+			if _, err = t.Conn.Write(p.buf); err != nil {
+				t.rareLog("[statshouse] failed to send data to statshouse: %v", err)
+			}
+		}
+	}
+	t.closeErr <- t.Conn.Close()
+}
+
+func (t *datagramConn) Write(b []byte) ([]byte, error) {
+	_, err := t.Conn.Write(b[tlInt32Size:]) // skip data length
+	return b, err
+}
+
+func (t *datagramConn) Close() error {
+	return t.Conn.Close()
 }
 
 // SetEnv changes the default environment associated with [Client].
@@ -358,6 +532,13 @@ func (c *Client) configure(logf LoggerFunc, network string, statsHouseAddr strin
 			logf("[statshouse] failed to close connection: %v", err)
 		}
 		c.conn = nil
+	}
+
+	if maxSize := maxPayloadSize(network); maxSize != c.packet.maxSize {
+		c.packet = packet{
+			buf:     make([]byte, batchHeaderLen, maxSize),
+			maxSize: maxSize,
+		}
 	}
 	if c.addr == "" {
 		logf("[statshouse] configured with empty address, all statistics will be silently dropped")
@@ -534,17 +715,17 @@ func (c *Client) send(nowUnixSec uint32) {
 	}
 }
 
-func (c *Client) sendCounter(k *metricKeyTransport, skey string, counter float64, tsUnixSec uint32) {
-	_ = c.writeHeader(k, skey, counter, tsUnixSec, counterFieldsMask, 0)
+func (p *packet) sendCounter(c *Client, k *metricKeyTransport, skey string, counter float64, tsUnixSec uint32) {
+	_ = p.writeHeader(c, k, skey, counter, tsUnixSec, counterFieldsMask, 0)
 }
 
-func (c *Client) sendUniques(k *metricKeyTransport, skey string, counter float64, tsUnixSec uint32, values []int64) {
+func (p *packet) sendUniques(c *Client, k *metricKeyTransport, skey string, counter float64, tsUnixSec uint32, values []int64) {
 	fieldsMask := uniqueFieldsMask
 	if counter != 0 && counter != float64(len(values)) {
 		fieldsMask |= counterFieldsMask
 	}
 	for len(values) > 0 {
-		left := c.writeHeader(k, skey, counter, tsUnixSec, fieldsMask, tlInt32Size+tlInt64Size)
+		left := p.writeHeader(c, k, skey, counter, tsUnixSec, fieldsMask, tlInt32Size+tlInt64Size)
 		if left < 0 {
 			return // header did not fit into empty buffer
 		}
@@ -552,21 +733,21 @@ func (c *Client) sendUniques(k *metricKeyTransport, skey string, counter float64
 		if writeCount > len(values) {
 			writeCount = len(values)
 		}
-		c.packetBuf = basictl.NatWrite(c.packetBuf, uint32(writeCount))
+		p.buf = basictl.NatWrite(p.buf, uint32(writeCount))
 		for i := 0; i < writeCount; i++ {
-			c.packetBuf = basictl.LongWrite(c.packetBuf, values[i])
+			p.buf = basictl.LongWrite(p.buf, values[i])
 		}
 		values = values[writeCount:]
 	}
 }
 
-func (c *Client) sendValues(k *metricKeyTransport, skey string, counter float64, tsUnixSec uint32, values []float64) {
+func (p *packet) sendValues(c *Client, k *metricKeyTransport, skey string, counter float64, tsUnixSec uint32, values []float64) {
 	fieldsMask := valueFieldsMask
 	if counter != 0 && counter != float64(len(values)) {
 		fieldsMask |= counterFieldsMask
 	}
 	for len(values) > 0 {
-		left := c.writeHeader(k, skey, counter, tsUnixSec, fieldsMask, tlInt32Size+tlFloat64Size)
+		left := p.writeHeader(c, k, skey, counter, tsUnixSec, fieldsMask, tlInt32Size+tlFloat64Size)
 		if left < 0 {
 			return // header did not fit into empty buffer
 		}
@@ -574,9 +755,9 @@ func (c *Client) sendValues(k *metricKeyTransport, skey string, counter float64,
 		if writeCount > len(values) {
 			writeCount = len(values)
 		}
-		c.packetBuf = basictl.NatWrite(c.packetBuf, uint32(writeCount))
+		p.buf = basictl.NatWrite(p.buf, uint32(writeCount))
 		for i := 0; i < writeCount; i++ {
-			c.packetBuf = basictl.DoubleWrite(c.packetBuf, values[i])
+			p.buf = basictl.DoubleWrite(p.buf, values[i])
 		}
 		values = values[writeCount:]
 	}
@@ -586,84 +767,92 @@ func (c *Client) flush() {
 	if c.batchCount <= 0 {
 		return
 	}
-	binary.LittleEndian.PutUint32(c.packetBuf, metricsBatchTag)
-	binary.LittleEndian.PutUint32(c.packetBuf[tlInt32Size:], 0) // fields_mask
-	binary.LittleEndian.PutUint32(c.packetBuf[2*tlInt32Size:], uint32(c.batchCount))
-	data := c.packetBuf
-	c.packetBuf = c.packetBuf[:batchHeaderLen]
-	c.batchCount = 0
+	c.writeBatchHeader()
 
 	if c.conn == nil && c.addr != "" {
-		conn, err := net.Dial(c.network, c.addr)
+		conn, err := c.netDial(c.env, c.network, c.addr)
 		if err != nil {
 			c.rareLog("[statshouse] failed to dial statshouse: %v", err)
-			return
+		} else {
+			c.conn = conn
 		}
-		c.conn = conn
 	}
 	if c.conn != nil && c.addr != "" {
-		_, err := c.conn.Write(data)
+		var err error
+		c.buf, err = c.conn.Write(c.buf)
 		if err != nil {
 			c.rareLog("[statshouse] failed to send data to statshouse: %v", err)
 		}
 	}
+	c.buf = c.buf[:batchHeaderLen]
+	c.batchCount = 0
 }
 
-func (c *Client) writeHeaderImpl(k *metricKeyTransport, skey string, counter float64, tsUnixSec uint32, fieldsMask uint32) {
+func (p *packet) writeBatchHeader() {
+	binary.LittleEndian.PutUint32(p.buf, uint32(len(p.buf)-tlInt32Size))
+	binary.LittleEndian.PutUint32(p.buf[tlInt32Size:], metricsBatchTag)
+	binary.LittleEndian.PutUint32(p.buf[2*tlInt32Size:], 0) // fields_mask
+	binary.LittleEndian.PutUint32(p.buf[3*tlInt32Size:], uint32(p.batchCount))
+}
+
+func (p *packet) writeHeaderImpl(k *metricKeyTransport, skey string, counter float64, tsUnixSec uint32, fieldsMask uint32) {
 	if tsUnixSec != 0 {
 		fieldsMask |= tsFieldsMask
 	}
-	c.packetBuf = basictl.NatWrite(c.packetBuf, fieldsMask)
-	c.packetBuf = basictl.StringWriteTruncated(c.packetBuf, k.name)
+	p.buf = basictl.NatWrite(p.buf, fieldsMask)
+	p.buf = basictl.StringWriteTruncated(p.buf, k.name)
 	// can write more than maxTags pairs, but this is allowed by statshouse
 	numSet := k.numSet
 	if skey != "" {
 		numSet++
 	}
-	c.packetBuf = basictl.NatWrite(c.packetBuf, uint32(numSet))
+	p.buf = basictl.NatWrite(p.buf, uint32(numSet))
 	if skey != "" {
-		c.writeTag("_s", skey)
+		p.writeTag("_s", skey)
 	}
 	for i := 0; i < k.numSet; i++ {
-		c.writeTag(k.tags[i][0], k.tags[i][1])
+		p.writeTag(k.tags[i][0], k.tags[i][1])
 	}
 	if fieldsMask&counterFieldsMask != 0 {
-		c.packetBuf = basictl.DoubleWrite(c.packetBuf, counter)
+		p.buf = basictl.DoubleWrite(p.buf, counter)
 	}
 	if fieldsMask&tsFieldsMask != 0 {
-		c.packetBuf = basictl.NatWrite(c.packetBuf, tsUnixSec)
+		p.buf = basictl.NatWrite(p.buf, tsUnixSec)
 	}
 }
 
 // returns space reserve or <0 if did not fit
-func (c *Client) writeHeader(k *metricKeyTransport, skey string, counter float64, tsUnixSec uint32, fieldsMask uint32, reserveSpace int) int {
-	wasLen := len(c.packetBuf)
-	c.writeHeaderImpl(k, skey, counter, tsUnixSec, fieldsMask)
-	left := maxPayloadSize - len(c.packetBuf) - reserveSpace
+func (p *packet) writeHeader(c *Client, k *metricKeyTransport, skey string, counter float64, tsUnixSec uint32, fieldsMask uint32, reserveSpace int) int {
+	wasLen := len(p.buf)
+	p.writeHeaderImpl(k, skey, counter, tsUnixSec, fieldsMask)
+	left := p.maxSize - len(p.buf) - reserveSpace
 	if left >= 0 {
-		c.batchCount++
+		p.batchCount++
 		return left
 	}
 	if wasLen != batchHeaderLen {
-		c.packetBuf = c.packetBuf[:wasLen]
-		c.flush()
-		c.writeHeaderImpl(k, skey, counter, tsUnixSec, fieldsMask)
-		left = maxPayloadSize - len(c.packetBuf) - reserveSpace
-		if left >= 0 {
-			c.batchCount++
-			return left
-		} else {
-			wasLen = batchHeaderLen
+		p.buf = p.buf[:wasLen]
+		if c != nil {
+			c.flush()
+			p.writeHeaderImpl(k, skey, counter, tsUnixSec, fieldsMask)
+			left = p.maxSize - len(p.buf) - reserveSpace
+			if left >= 0 {
+				p.batchCount++
+				return left
+			}
 		}
+		wasLen = batchHeaderLen
 	}
-	c.packetBuf = c.packetBuf[:wasLen]
-	c.rareLog("[statshouse] metric %q payload too big to fit into packet, discarding", k.name)
+	p.buf = p.buf[:wasLen]
+	if c != nil {
+		c.rareLog("[statshouse] metric %q payload too big to fit into packet, discarding", k.name)
+	}
 	return -1
 }
 
-func (c *Client) writeTag(tagName string, tagValue string) {
-	c.packetBuf = basictl.StringWriteTruncated(c.packetBuf, tagName)
-	c.packetBuf = basictl.StringWriteTruncated(c.packetBuf, tagValue)
+func (c *packet) writeTag(tagName string, tagValue string) {
+	c.buf = basictl.StringWriteTruncated(c.buf, tagName)
+	c.buf = basictl.StringWriteTruncated(c.buf, tagValue)
 }
 
 // MetricRef is the preferred way to record observations, save the result for later use:
@@ -1086,12 +1275,12 @@ func (b *bucket) send(c *Client, tsUnixSec uint32) {
 		fillTag(&k, "0", c.env)
 	}
 	if b.countToSend > 0 {
-		c.sendCounter(&k, "", b.countToSend, tsUnixSec)
+		c.sendCounter(c, &k, "", b.countToSend, tsUnixSec)
 	}
-	c.sendValues(&k, "", 0, tsUnixSec, b.valueToSend)
-	c.sendUniques(&k, "", 0, tsUnixSec, b.uniqueToSend)
+	c.sendValues(c, &k, "", 0, tsUnixSec, b.valueToSend)
+	c.sendUniques(c, &k, "", 0, tsUnixSec, b.uniqueToSend)
 	for _, skey := range b.stopToSend {
-		c.sendCounter(&k, skey, 1, tsUnixSec)
+		c.sendCounter(c, &k, skey, 1, tsUnixSec)
 	}
 }
 
