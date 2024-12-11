@@ -146,6 +146,10 @@ func Unique(name string, tags Tags, value int64) {
 	globalClient.Unique(name, tags, value)
 }
 
+func Uniques(name string, tags Tags, values []int64) {
+	globalClient.Uniques(name, tags, values)
+}
+
 func UniqueHistoric(name string, tags Tags, value int64, tsUnixSec uint32) {
 	globalClient.UniqueHistoric(name, tags, value, tsUnixSec)
 }
@@ -958,6 +962,14 @@ type bucket struct {
 	uniqueToSend   []int64
 	stopToSend     []string
 	emptySendCount int
+}
+
+func (m *MetricRef) IsValid() bool {
+	return m.bucket != nil
+}
+
+func (m *MetricRef) IsNil() bool {
+	return m.bucket == nil
 }
 
 // Count records the number of events or observations.
