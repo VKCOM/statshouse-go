@@ -22,7 +22,7 @@ import (
 
 const (
 	DefaultAddr    = "127.0.0.1:13337"
-	DefaultNetwork = "tcp"
+	DefaultNetwork = "udp"
 
 	defaultSendPeriod    = 1 * time.Second
 	errorReportingPeriod = time.Minute
