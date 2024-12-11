@@ -967,8 +967,6 @@ func (m *MetricRef) Count(n float64) {
 
 func (m *MetricRef) CountHistoric(n float64, tsUnixSec uint32) {
 	m.write(tsUnixSec, func(b *bucket) {
-		b.k = m.k
-		b.kn = m.kn
 		b.count += n
 	})
 }
@@ -1000,8 +998,6 @@ func (m *MetricRef) Value(value float64) {
 
 func (m *MetricRef) ValueHistoric(value float64, tsUnixSec uint32) {
 	m.write(tsUnixSec, func(b *bucket) {
-		b.k = m.k
-		b.kn = m.kn
 		b.value = append(b.value, value)
 	})
 }
@@ -1035,8 +1031,6 @@ func (m *MetricRef) Values(values []float64) {
 
 func (m *MetricRef) ValuesHistoric(values []float64, tsUnixSec uint32) {
 	m.write(tsUnixSec, func(b *bucket) {
-		b.k = m.k
-		b.kn = m.kn
 		b.value = append(b.value, values...)
 	})
 }
@@ -1070,8 +1064,6 @@ func (m *MetricRef) Unique(value int64) {
 
 func (m *MetricRef) UniqueHistoric(value int64, tsUnixSec uint32) {
 	m.write(tsUnixSec, func(b *bucket) {
-		b.k = m.k
-		b.kn = m.kn
 		b.unique = append(b.unique, value)
 	})
 }
@@ -1105,8 +1097,6 @@ func (m *MetricRef) Uniques(values []int64) {
 
 func (m *MetricRef) UniquesHistoric(values []int64, tsUnixSec uint32) {
 	m.write(tsUnixSec, func(b *bucket) {
-		b.k = m.k
-		b.kn = m.kn
 		b.unique = append(b.unique, values...)
 	})
 }
@@ -1140,8 +1130,6 @@ func (m *MetricRef) StringTop(value string) {
 
 func (m *MetricRef) StringTopHistoric(value string, tsUnixSec uint32) {
 	m.write(tsUnixSec, func(b *bucket) {
-		b.k = m.k
-		b.kn = m.kn
 		b.stop = append(b.stop, value)
 	})
 }
@@ -1175,8 +1163,6 @@ func (m *MetricRef) StringsTop(values []string) {
 
 func (m *MetricRef) StringsTopHistoric(values []string, tsUnixSec uint32) {
 	m.write(tsUnixSec, func(b *bucket) {
-		b.k = m.k
-		b.kn = m.kn
 		b.stop = append(b.stop, values...)
 	})
 }
@@ -1213,7 +1199,10 @@ func (m *MetricRef) write(tsUnixSec uint32, fn func(*bucket)) {
 	c := m.c
 	if !tsZeroOrEqual {
 		m.mu.Unlock()
-		var b bucket
+		b := bucket{
+			k:  m.k,
+			kn: m.kn,
+		}
 		fn(&b)
 		b.swapToSend(tsUnixSec)
 		c.transportMu.Lock()
