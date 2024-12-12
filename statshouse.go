@@ -870,7 +870,7 @@ func (c *Client) MetricRef(metric string, tags Tags) MetricRef {
 	e, ok := c.w[k]
 	c.mu.RUnlock()
 	if ok {
-		return MetricRef{e}
+		return MetricRef{bucket: e}
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -888,7 +888,7 @@ func (c *Client) MetricRef(metric string, tags Tags) MetricRef {
 	}
 	c.w[k] = b
 	c.r = append(c.r, b)
-	return MetricRef{b}
+	return MetricRef{bucket: b}
 }
 
 // MetricNamedRef is similar to [*Client.MetricRef] but slightly slower, and allows to specify tags by name.
@@ -901,7 +901,7 @@ func (c *Client) MetricNamedRef(metric string, tags NamedTags) MetricRef {
 	e, ok := c.wn[k]
 	c.mu.RUnlock()
 	if ok {
-		return MetricRef{e}
+		return MetricRef{bucket: e}
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -919,7 +919,7 @@ func (c *Client) MetricNamedRef(metric string, tags NamedTags) MetricRef {
 	}
 	c.wn[k] = b
 	c.rn = append(c.rn, b)
-	return MetricRef{b}
+	return MetricRef{bucket: b}
 }
 
 // Deprecated: causes unnecessary memory allocation.
@@ -940,6 +940,7 @@ func (c *Client) MetricNamed(metric string, tags NamedTags) *MetricRef {
 // and is used to record attributes of observed events.
 type MetricRef struct {
 	*bucket
+	SurviveNilWrite bool
 }
 
 type bucket struct {
@@ -1204,8 +1205,7 @@ func (c *Client) NamedStringsTopHistoric(name string, tags NamedTags, values []s
 }
 
 func (m *MetricRef) write(tsUnixSec uint32, fn func(*bucket)) {
-	if m.bucket == nil {
-		log.Println("[statshouse] data loss: nil metric write")
+	if m.bucket == nil && m.SurviveNilWrite {
 		return
 	}
 	m.mu.Lock()
