@@ -972,6 +972,10 @@ func (m *MetricRef) IsNil() bool {
 	return m.bucket == nil
 }
 
+func (m *MetricRef) Equal(other MetricRef) bool {
+	return m.bucket == other.bucket
+}
+
 // Count records the number of events or observations.
 func (m *MetricRef) Count(n float64) {
 	m.CountHistoric(n, 0)
@@ -1200,6 +1204,10 @@ func (c *Client) NamedStringsTopHistoric(name string, tags NamedTags, values []s
 }
 
 func (m *MetricRef) write(tsUnixSec uint32, fn func(*bucket)) {
+	if m.bucket == nil {
+		log.Println("[statshouse] data loss: nil metric write")
+		return
+	}
 	m.mu.Lock()
 	tsZeroOrEqual := tsUnixSec == 0 || m.tsUnixSec <= tsUnixSec
 	if m.attached && tsZeroOrEqual {
