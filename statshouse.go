@@ -874,6 +874,9 @@ func (c *Client) MetricRef(metric string, tags Tags) MetricRef {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if e, ok = c.w[k]; ok {
+		return MetricRef{bucket: e}
+	}
 	b := &bucket{
 		c:         c,
 		k:         k,
@@ -905,6 +908,9 @@ func (c *Client) MetricNamedRef(metric string, tags NamedTags) MetricRef {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if e, ok = c.wn[k]; ok {
+		return MetricRef{bucket: e}
+	}
 	b := &bucket{
 		c:         c,
 		kn:        k,
