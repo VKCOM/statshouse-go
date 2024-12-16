@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/vkcom/statshouse-go/internal/basictl"
+	"pgregory.net/rand"
 )
 
 const (
@@ -38,6 +39,7 @@ const (
 	maxTags              = 16
 	maxEmptySendCount    = 2   // before bucket detach
 	tcpConnBucketCount   = 512 // 32 MiB max TCP send buffer size
+	defaultMaxBucketSize = 1024
 )
 
 var (
@@ -213,6 +215,23 @@ func StopRegularMeasurement(id int) {
 // Specifying empty StatsHouse address will make the client silently discard all metrics.
 // if you get compiler error after updating to recent version of library, pass statshouse.DefaultNetwork to network parameter
 func NewClient(logf LoggerFunc, network string, statsHouseAddr string, defaultEnv string) *Client {
+	return NewClientEx(ConfigureArgs{
+		Logger:         logf,
+		Network:        network,
+		StatsHouseAddr: statsHouseAddr,
+		DefaultEnv:     defaultEnv,
+	})
+}
+
+func NewClientEx(args ConfigureArgs) *Client {
+	logf := args.Logger
+	network := args.Network
+	statsHouseAddr := args.StatsHouseAddr
+	defaultEnv := args.DefaultEnv
+	maxBucketSize := args.MaxBucketSize
+	if maxBucketSize <= 0 {
+		maxBucketSize = defaultMaxBucketSize
+	}
 	if logf == nil {
 		logf = log.Printf
 	}
@@ -225,12 +244,14 @@ func NewClient(logf LoggerFunc, network string, statsHouseAddr string, defaultEn
 			buf:     make([]byte, batchHeaderLen, maxSize),
 			maxSize: maxSize,
 		},
-		close:        make(chan chan struct{}),
-		w:            map[metricKey]*bucket{},
-		wn:           map[metricKeyNamed]*bucket{},
-		env:          defaultEnv,
-		regularFuncs: map[int]func(*Client){},
-		tsUnixSec:    uint32(time.Now().Unix()),
+		close:         make(chan chan struct{}),
+		w:             map[metricKey]*bucket{},
+		wn:            map[metricKeyNamed]*bucket{},
+		app:           args.AppName,
+		env:           defaultEnv,
+		regularFuncs:  map[int]func(*Client){},
+		tsUnixSec:     uint32(time.Now().Unix()),
+		maxBucketSize: maxBucketSize,
 	}
 	go c.run()
 	return c
@@ -263,6 +284,7 @@ type Client struct {
 
 	// transport
 	transportMu sync.RWMutex
+	app         string
 	env         string // if set, will be put into key0/env
 	network     string
 	addr        string
@@ -270,12 +292,13 @@ type Client struct {
 	packet
 
 	// data
-	mu        sync.RWMutex // taken after [bucket.mu]
-	w         map[metricKey]*bucket
-	r         []*bucket
-	wn        map[metricKeyNamed]*bucket
-	rn        []*bucket
-	tsUnixSec uint32
+	mu            sync.RWMutex // taken after [bucket.mu]
+	w             map[metricKey]*bucket
+	r             []*bucket
+	wn            map[metricKeyNamed]*bucket
+	rn            []*bucket
+	tsUnixSec     uint32
+	maxBucketSize int
 
 	// external callbacks
 	regularFuncsMu sync.Mutex
@@ -289,6 +312,15 @@ type Client struct {
 
 	// debug
 	bucketCount *atomic.Int32
+}
+
+type ConfigureArgs struct {
+	Logger         LoggerFunc
+	AppName        string
+	DefaultEnv     string
+	Network        string // default "udp"
+	StatsHouseAddr string // default "127.0.0.1:13337"
+	MaxBucketSize  int
 }
 
 type packet struct {
@@ -310,6 +342,7 @@ type tcpConn struct {
 	wouldBlockSize atomic.Int32
 
 	*Client
+	app string
 	env string
 	net.Conn
 
@@ -320,13 +353,13 @@ type tcpConn struct {
 	closeErr chan error
 }
 
-func (c *Client) netDial(env, network, addr string) (netConn, error) {
-	conn, err := net.Dial(network, addr)
+func (c *Client) netDial() (netConn, error) {
+	conn, err := net.Dial(c.network, c.addr)
 	if err != nil {
 		c.rareLog("[statshouse] failed to dial statshouse: %v", err)
 		return nil, err
 	}
-	if network != "tcp" {
+	if c.network != "tcp" {
 		return &datagramConn{Conn: conn}, nil
 	}
 	_, err = conn.Write([]byte("statshousev1"))
@@ -337,7 +370,8 @@ func (c *Client) netDial(env, network, addr string) (netConn, error) {
 	}
 	t := &tcpConn{
 		Client:   c,
-		env:      env,
+		app:      c.app,
+		env:      c.env,
 		Conn:     conn,
 		r:        make(chan []byte, tcpConnBucketCount),
 		w:        make(chan []byte, tcpConnBucketCount),
@@ -426,8 +460,9 @@ func (t *tcpConn) send() {
 				name: "__src_client_write_err",
 			}
 			fillTag(&k, "0", t.env)
-			fillTag(&k, "1", "1") // lang: golang
-			fillTag(&k, "2", "1") // kind: would block
+			fillTag(&k, "1", "1")   // lang: golang
+			fillTag(&k, "2", "1")   // kind: would block
+			fillTag(&k, "3", t.app) // application name
 			p.sendValues(nil, &k, "", 0, 0, []float64{float64(n)})
 			p.writeBatchHeader()
 			if _, err = t.Conn.Write(p.buf); err != nil {
@@ -517,6 +552,23 @@ func (c *Client) callRegularFuncs(regularCache []func(*Client)) []func(*Client) 
 }
 
 func (c *Client) configure(logf LoggerFunc, network string, statsHouseAddr string, env string) {
+	c.configureEx(ConfigureArgs{
+		Logger:         logf,
+		Network:        network,
+		StatsHouseAddr: statsHouseAddr,
+		DefaultEnv:     env,
+	})
+}
+
+func (c *Client) configureEx(args ConfigureArgs) {
+	logf := args.Logger
+	network := args.Network
+	statsHouseAddr := args.StatsHouseAddr
+	env := args.DefaultEnv
+	maxBucketSize := args.MaxBucketSize
+	if maxBucketSize <= 0 {
+		maxBucketSize = defaultMaxBucketSize
+	}
 	if logf == nil {
 		logf = log.Printf
 	}
@@ -524,9 +576,14 @@ func (c *Client) configure(logf LoggerFunc, network string, statsHouseAddr strin
 	c.logMu.Lock()
 	c.logF = logf
 	c.logMu.Unlock()
+	// update max bucket size
+	c.mu.Lock()
+	c.maxBucketSize = maxBucketSize
+	c.mu.Unlock()
 	// then transport
 	c.transportMu.Lock()
 	defer c.transportMu.Unlock()
+	c.app = args.AppName
 	c.env = env
 	c.network = network
 	c.addr = statsHouseAddr
@@ -592,6 +649,8 @@ func (b *bucket) swapToSend(nowUnixSec uint32) {
 	defer b.mu.Unlock()
 	b.tsUnixSec = nowUnixSec
 	b.count, b.countToSend = 0, b.count
+	b.valueCount, b.valueCountToSend = 0, b.valueCount
+	b.uniqueCount, b.uniqueCountToSend = 0, b.uniqueCount
 	b.value, b.valueToSend = b.valueToSend[:0], b.value
 	b.unique, b.uniqueToSend = b.uniqueToSend[:0], b.unique
 	b.stop, b.stopToSend = b.stopToSend[:0], b.stop
@@ -774,7 +833,7 @@ func (c *Client) flush() {
 	c.writeBatchHeader()
 
 	if c.conn == nil && c.addr != "" {
-		conn, err := c.netDial(c.env, c.network, c.addr)
+		conn, err := c.netDial()
 		if err != nil {
 			c.rareLog("[statshouse] failed to dial statshouse: %v", err)
 		} else {
@@ -880,6 +939,7 @@ func (c *Client) MetricRef(metric string, tags Tags) MetricRef {
 	b := &bucket{
 		c:         c,
 		k:         k,
+		maxSize:   c.maxBucketSize,
 		tsUnixSec: c.tsUnixSec,
 		attached:  true,
 	}
@@ -914,6 +974,7 @@ func (c *Client) MetricNamedRef(metric string, tags NamedTags) MetricRef {
 	b := &bucket{
 		c:         c,
 		kn:        k,
+		maxSize:   c.maxBucketSize,
 		tsUnixSec: c.tsUnixSec,
 		attached:  true,
 	}
@@ -951,24 +1012,30 @@ type MetricRef struct {
 
 type bucket struct {
 	// readonly
-	c  *Client
-	k  metricKey
-	kn metricKeyNamed
+	c       *Client
+	k       metricKey
+	kn      metricKeyNamed
+	maxSize int
 
-	mu        sync.Mutex // taken before [Client.mu]
-	tsUnixSec uint32
-	attached  bool
-	count     float64
-	value     []float64
-	unique    []int64
-	stop      []string
+	mu          sync.Mutex // taken before [Client.mu]
+	r           *rand.Rand
+	tsUnixSec   uint32
+	attached    bool
+	count       float64
+	valueCount  int
+	uniqueCount int
+	value       []float64
+	unique      []int64
+	stop        []string
 
 	// access only by "send" goroutine, not protected
-	countToSend    float64
-	valueToSend    []float64
-	uniqueToSend   []int64
-	stopToSend     []string
-	emptySendCount int
+	countToSend       float64
+	valueCountToSend  int
+	uniqueCountToSend int
+	valueToSend       []float64
+	uniqueToSend      []int64
+	stopToSend        []string
+	emptySendCount    int
 }
 
 func (m *MetricRef) IsValid() bool {
@@ -1021,7 +1088,7 @@ func (m *MetricRef) Value(value float64) {
 
 func (m *MetricRef) ValueHistoric(value float64, tsUnixSec uint32) {
 	m.write(tsUnixSec, func(b *bucket) {
-		b.value = append(b.value, value)
+		b.appendValue(value)
 	})
 }
 
@@ -1048,7 +1115,7 @@ func (c *Client) NamedValueHistoric(name string, tags NamedTags, value float64, 
 // Values records the observed values for distribution estimation.
 func (m *MetricRef) Values(values []float64) {
 	m.write(0, func(b *bucket) {
-		b.value = append(b.value, values...)
+		b.appendValue(values...)
 	})
 }
 
@@ -1081,13 +1148,13 @@ func (c *Client) NamedValuesHistoric(name string, tags NamedTags, values []float
 // Unique records the observed value for cardinality estimation.
 func (m *MetricRef) Unique(value int64) {
 	m.write(0, func(b *bucket) {
-		b.unique = append(b.unique, value)
+		b.appendUnique(value)
 	})
 }
 
 func (m *MetricRef) UniqueHistoric(value int64, tsUnixSec uint32) {
 	m.write(tsUnixSec, func(b *bucket) {
-		b.unique = append(b.unique, value)
+		b.appendUnique(value)
 	})
 }
 
@@ -1120,7 +1187,7 @@ func (m *MetricRef) Uniques(values []int64) {
 
 func (m *MetricRef) UniquesHistoric(values []int64, tsUnixSec uint32) {
 	m.write(tsUnixSec, func(b *bucket) {
-		b.unique = append(b.unique, values...)
+		b.appendUnique(values...)
 	})
 }
 
@@ -1285,6 +1352,38 @@ func (m *MetricRef) write(tsUnixSec uint32, fn func(*bucket)) {
 	c.rareLog("[statshouse] send safety counter limit reached, discarding")
 }
 
+func (b *bucket) appendUnique(s ...int64) {
+	for _, v := range s {
+		b.uniqueCount++
+		if len(b.unique) < b.maxSize {
+			b.unique = append(b.unique, v)
+		} else {
+			if b.r == nil {
+				b.r = rand.New()
+			}
+			if n := b.r.Intn(b.uniqueCount); n < len(b.unique) {
+				b.unique[n] = v
+			}
+		}
+	}
+}
+
+func (b *bucket) appendValue(s ...float64) {
+	for _, v := range s {
+		b.valueCount++
+		if len(b.value) < b.maxSize {
+			b.value = append(b.value, v)
+		} else {
+			if b.r == nil {
+				b.r = rand.New()
+			}
+			if n := b.r.Intn(b.valueCount); n < len(b.value) {
+				b.value[n] = v
+			}
+		}
+	}
+}
+
 func (b *bucket) send(c *Client, tsUnixSec uint32) {
 	var k metricKeyTransport
 	if b.k.name != "" {
@@ -1307,8 +1406,8 @@ func (b *bucket) send(c *Client, tsUnixSec uint32) {
 	if b.countToSend > 0 {
 		c.sendCounter(c, &k, "", b.countToSend, tsUnixSec)
 	}
-	c.sendValues(c, &k, "", 0, tsUnixSec, b.valueToSend)
-	c.sendUniques(c, &k, "", 0, tsUnixSec, b.uniqueToSend)
+	c.sendValues(c, &k, "", float64(b.valueCountToSend), tsUnixSec, b.valueToSend)
+	c.sendUniques(c, &k, "", float64(b.uniqueCountToSend), tsUnixSec, b.uniqueToSend)
 	for _, skey := range b.stopToSend {
 		c.sendCounter(c, &k, skey, 1, tsUnixSec)
 	}
