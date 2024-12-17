@@ -66,12 +66,25 @@ type LoggerFunc func(format string, args ...interface{})
 // Configure is expected to be called once during app startup to configure the global [Client].
 // Specifying empty StatsHouse address will make the client silently discard all metrics.
 func Configure(logf LoggerFunc, statsHouseAddr string, defaultEnv string) {
-	globalClient.configure(logf, DefaultNetwork, statsHouseAddr, defaultEnv)
+	globalClient.ConfigureEx(ConfigureArgs{
+		Logger:         logf,
+		StatsHouseAddr: statsHouseAddr,
+		DefaultEnv:     defaultEnv,
+	})
+}
+
+func ConfigureEx(args ConfigureArgs) {
+	globalClient.ConfigureEx(args)
 }
 
 // network must be either "tcp", "udp" or "unixgram"
 func ConfigureNetwork(logf LoggerFunc, network string, statsHouseAddr string, defaultEnv string) {
-	globalClient.configure(logf, network, statsHouseAddr, defaultEnv)
+	globalClient.ConfigureEx(ConfigureArgs{
+		Logger:         logf,
+		Network:        network,
+		StatsHouseAddr: statsHouseAddr,
+		DefaultEnv:     defaultEnv,
+	})
 }
 
 func TrackBucketCount() {
@@ -320,7 +333,7 @@ type ConfigureArgs struct {
 	DefaultEnv     string
 	Network        string // default "udp"
 	StatsHouseAddr string // default "127.0.0.1:13337"
-	MaxBucketSize  int
+	MaxBucketSize  int    // default 1024
 }
 
 type packet struct {
@@ -551,16 +564,7 @@ func (c *Client) callRegularFuncs(regularCache []func(*Client)) []func(*Client) 
 	return regularCache
 }
 
-func (c *Client) configure(logf LoggerFunc, network string, statsHouseAddr string, env string) {
-	c.configureEx(ConfigureArgs{
-		Logger:         logf,
-		Network:        network,
-		StatsHouseAddr: statsHouseAddr,
-		DefaultEnv:     env,
-	})
-}
-
-func (c *Client) configureEx(args ConfigureArgs) {
+func (c *Client) ConfigureEx(args ConfigureArgs) {
 	logf := args.Logger
 	network := args.Network
 	statsHouseAddr := args.StatsHouseAddr
@@ -571,6 +575,12 @@ func (c *Client) configureEx(args ConfigureArgs) {
 	}
 	if logf == nil {
 		logf = log.Printf
+	}
+	if network == "" {
+		network = DefaultNetwork
+	}
+	if statsHouseAddr == "" {
+		statsHouseAddr = DefaultAddr
 	}
 	// update logger first
 	c.logMu.Lock()
