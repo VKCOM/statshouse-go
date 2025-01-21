@@ -3,6 +3,7 @@ package statshouse
 import (
 	"encoding/binary"
 	"math"
+	"net"
 
 	"github.com/vkcom/statshouse-go/internal/basictl"
 )
@@ -144,13 +145,19 @@ func fillTag(k *metricKeyTransport, tagName string, tagValue string) {
 	k.hasEnv = k.hasEnv || tagName == "0" || tagName == "env" || tagName == "key0" // TODO - keep only "0", rest are legacy
 }
 
-func maxPacketSize(network string) int {
+func maxPacketSize(network, addr string) int {
 	switch network {
 	case "tcp":
 		return math.MaxUint16
-	default:
-		// "udp" or "unixgram"
-		// IPv6 mandated minimum MTU size of 1280 (minus 40 byte IPv6 header and 8 byte UDP header)
+	case "unixgram":
 		return 1232
+	default:
+		addr, err := net.ResolveUDPAddr("udp", addr)
+		switch {
+		case err == nil && addr.IP.IsLoopback():
+			return 65507 // https://stackoverflow.com/questions/42609561/udp-maximum-packet-size/42610200
+		default:
+			return 1232 // IPv6 mandated minimum MTU size of 1280 (minus 40 byte IPv6 header and 8 byte UDP header)
+		}
 	}
 }
