@@ -80,9 +80,6 @@ func (c *Client) ConfigureEx(args ConfigureArgs) {
 	if args.Network == "" {
 		args.Network = DefaultNetwork
 	}
-	if args.StatsHouseAddr == "" {
-		args.StatsHouseAddr = DefaultAddr
-	}
 	if args.MaxBucketSize <= 0 {
 		args.MaxBucketSize = defaultMaxBucketSize
 	}
