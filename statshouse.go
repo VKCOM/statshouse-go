@@ -33,7 +33,7 @@ const (
 )
 
 var (
-	globalClient       = NewClientEx(ConfigureArgs{})
+	globalClient       = NewClientEx(ConfigureArgs{StatsHouseAddr: DefaultAddr})
 	errWouldBlock      = fmt.Errorf("would block")
 	errWriteAfterClose = fmt.Errorf("write after close")
 
