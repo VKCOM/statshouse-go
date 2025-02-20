@@ -226,7 +226,6 @@ func (m *MetricRef) write(tsUnixSec uint32, fn func(*bucket)) {
 		c.mu.Lock()
 		if m.k.name != "" {
 			if b = c.w[m.k]; b == nil {
-				fn(m.bucket)
 				c.w[m.k] = m.bucket
 				c.r = append(c.r, m.bucket)
 				m.tsUnixSec = c.tsUnixSec
@@ -234,7 +233,6 @@ func (m *MetricRef) write(tsUnixSec uint32, fn func(*bucket)) {
 			}
 		} else if m.kn.name != "" {
 			if b = c.wn[m.kn]; b == nil {
-				fn(m.bucket)
 				c.wn[m.kn] = m.bucket
 				c.rn = append(c.rn, m.bucket)
 				m.tsUnixSec = c.tsUnixSec
