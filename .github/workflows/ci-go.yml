@@ -22,3 +22,10 @@ jobs:
           version: v0.4.7
           install-go: false
       - run: go test -v ./...
+  statshouse-client-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
+      - run: go run github.com/vkcom/statshouse/cmd/statshouse-client-test@master --network=tcp
