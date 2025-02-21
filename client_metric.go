@@ -209,8 +209,9 @@ func (m *MetricRef) write(tsUnixSec uint32, fn func(*bucket)) {
 	if !tsZeroOrEqual {
 		m.mu.Unlock()
 		b := bucket{
-			k:  m.k,
-			kn: m.kn,
+			k:       m.k,
+			kn:      m.kn,
+			maxSize: c.maxBucketSize,
 		}
 		fn(&b)
 		b.swapToSend(tsUnixSec)

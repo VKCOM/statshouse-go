@@ -155,12 +155,28 @@ func ValueHistoric(name string, tags Tags, value float64, tsUnixSec uint32) {
 	globalClient.ValueHistoric(name, tags, value, tsUnixSec)
 }
 
+func Values(name string, tags Tags, values []float64) {
+	globalClient.Values(name, tags, values)
+}
+
+func ValuesHistoric(name string, tags Tags, values []float64, tsUnixSec uint32) {
+	globalClient.ValuesHistoric(name, tags, values, tsUnixSec)
+}
+
 func NamedValue(name string, tags NamedTags, value float64) {
 	globalClient.NamedValue(name, tags, value)
 }
 
 func NamedValueHistoric(name string, tags NamedTags, value float64, tsUnixSec uint32) {
 	globalClient.NamedValueHistoric(name, tags, value, tsUnixSec)
+}
+
+func NamedValues(name string, tags NamedTags, values []float64) {
+	globalClient.NamedValues(name, tags, values)
+}
+
+func NamedValuesHistoric(name string, tags NamedTags, values []float64, tsUnixSec uint32) {
+	globalClient.NamedValuesHistoric(name, tags, values, tsUnixSec)
 }
 
 func Unique(name string, tags Tags, value int64) {
@@ -181,6 +197,14 @@ func NamedUnique(name string, tags NamedTags, value int64) {
 
 func NamedUniqueHistoric(name string, tags NamedTags, value int64, tsUnixSec uint32) {
 	globalClient.NamedUniqueHistoric(name, tags, value, tsUnixSec)
+}
+
+func NamedUniques(name string, tags NamedTags, values []int64) {
+	globalClient.NamedUniques(name, tags, values)
+}
+
+func NamedUniquesHistoric(name string, tags NamedTags, values []int64, tsUnixSec uint32) {
+	globalClient.NamedUniquesHistoric(name, tags, values, tsUnixSec)
 }
 
 func StringTop(name string, tags Tags, value string) {
