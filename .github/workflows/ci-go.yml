@@ -8,24 +8,24 @@ jobs:
         os: ['ubuntu-latest', 'windows-latest', 'macOS-latest']
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 1
-      - uses: actions/setup-go@v3
+      - uses: actions/setup-go@v4
         with:
           go-version: ${{ matrix.go }}
-      - uses: golangci/golangci-lint-action@v3
+      - uses: golangci/golangci-lint-action@v4
         with:
           args: --timeout=10m --disable-all -E goimports
-      - uses: dominikh/staticcheck-action@v1.2.0
+      - uses: dominikh/staticcheck-action@v1.3.1
         with:
-          version: v0.4.7
+          version: v0.6.1
           install-go: false
       - run: go test -v ./...
   statshouse-client-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 1
       - run: go run github.com/vkcom/statshouse/cmd/statshouse-client-test@master --network=tcp
