@@ -26,7 +26,7 @@ const (
 	uniqueFieldsMask     = uint32(1 << 2)
 	tsFieldsMask         = uint32(1 << 4)
 	batchHeaderLen       = 4 * tlInt32Size // data length (for TCP), tag, fields_mask, # of batches
-	maxTags              = 16
+	maxTags              = 47
 	maxEmptySendCount    = 2   // before bucket detach
 	tcpConnBucketCount   = 512 // 32 MiB max TCP send buffer size
 	defaultMaxBucketSize = 1024
@@ -37,7 +37,11 @@ var (
 	errWouldBlock      = fmt.Errorf("would block")
 	errWriteAfterClose = fmt.Errorf("write after close")
 
-	tagIDs = [maxTags]string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"}
+	tagIDs = [maxTags]string{
+		"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15",
+		"16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31",
+		"32", "33", "34", "35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "46",
+	}
 )
 
 // NamedTags are used to call [*Client.MetricNamed].
