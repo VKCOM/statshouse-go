@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VKCOM/statshouse-go"
 	"github.com/stretchr/testify/require"
-	"github.com/vkcom/statshouse-go"
 )
 
 func TestCountRace(t *testing.T) {
