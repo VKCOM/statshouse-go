@@ -1,4 +1,4 @@
-module github.com/vkcom/statshouse-go
+module github.com/VKCOM/statshouse-go
 
 go 1.19
 

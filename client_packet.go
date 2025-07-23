@@ -5,7 +5,7 @@ import (
 	"math"
 	"net"
 
-	"github.com/vkcom/statshouse-go/internal/basictl"
+	"github.com/VKCOM/statshouse-go/internal/basictl"
 )
 
 type packet struct {
