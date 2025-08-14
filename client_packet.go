@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"math"
 	"net"
+	"runtime"
 
 	"github.com/VKCOM/statshouse-go/internal/basictl"
 )
@@ -155,6 +156,9 @@ func maxPacketSize(network, addr string) int {
 		addr, err := net.ResolveUDPAddr("udp", addr)
 		switch {
 		case err == nil && addr.IP.IsLoopback():
+			if runtime.GOOS == "darwin" {
+				return 1232 // macOS has stricter UDP limits on loopback interface
+			}
 			return 65507 // https://stackoverflow.com/questions/42609561/udp-maximum-packet-size/42610200
 		default:
 			return 1232 // IPv6 mandated minimum MTU size of 1280 (minus 40 byte IPv6 header and 8 byte UDP header)
