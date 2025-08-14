@@ -28,4 +28,4 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
-      - run: go run github.com/vkcom/statshouse/cmd/statshouse-client-test@master --network=tcp
+      - run: go run github.com/VKCOM/statshouse/cmd/statshouse-client-test@master --network=tcp
