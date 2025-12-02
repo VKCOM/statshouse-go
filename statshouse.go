@@ -14,7 +14,10 @@ import (
 const (
 	DefaultAddr    = "127.0.0.1:13337"
 	DefaultNetwork = "udp"
-	StringTopTag   = 47 // you can add this tag instead of calling StringTop functions family
+	// You can add this tag instead of calling StringTop functions family.
+	// This is especialy useful, if you are going to send value or unique, as StringTop family is for counters only.
+	StringTopTag      = 47
+	StringTopNamedTag = "47"
 
 	defaultSendPeriod    = 1 * time.Second
 	errorReportingPeriod = time.Minute
@@ -49,7 +52,7 @@ var (
 type NamedTags [][2]string
 
 // Tags are used to call [*Client.Metric].
-type Tags [maxTags]string
+type Tags [maxTags]string // TODO - refactor all functions to receive []string instead
 
 type LoggerFunc func(format string, args ...interface{})
 
