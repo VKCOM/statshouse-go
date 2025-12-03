@@ -14,6 +14,10 @@ import (
 const (
 	DefaultAddr    = "127.0.0.1:13337"
 	DefaultNetwork = "udp"
+	// You can add this tag instead of calling StringTop functions family.
+	// This is especialy useful, if you are going to send value or unique, as StringTop family is for counters only.
+	StringTopTag      = 47
+	StringTopNamedTag = "47"
 
 	defaultSendPeriod    = 1 * time.Second
 	errorReportingPeriod = time.Minute
@@ -26,7 +30,7 @@ const (
 	uniqueFieldsMask     = uint32(1 << 2)
 	tsFieldsMask         = uint32(1 << 4)
 	batchHeaderLen       = 4 * tlInt32Size // data length (for TCP), tag, fields_mask, # of batches
-	maxTags              = 47
+	maxTags              = 48
 	maxEmptySendCount    = 2   // before bucket detach
 	tcpConnBucketCount   = 512 // 32 MiB max TCP send buffer size
 	defaultMaxBucketSize = 1024
@@ -40,7 +44,7 @@ var (
 	tagIDs = [maxTags]string{
 		"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15",
 		"16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31",
-		"32", "33", "34", "35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "46",
+		"32", "33", "34", "35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "46", "47",
 	}
 )
 
@@ -48,7 +52,7 @@ var (
 type NamedTags [][2]string
 
 // Tags are used to call [*Client.Metric].
-type Tags [maxTags]string
+type Tags [maxTags]string // TODO - refactor all functions to receive []string instead
 
 type LoggerFunc func(format string, args ...interface{})
 
