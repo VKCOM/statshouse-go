@@ -164,7 +164,9 @@ func (t *tcpConn) send() {
 		for err != nil {
 			// reconnect (no more than once per second)
 			_ = t.Conn.Close()
-			if err = t.reconnect(dialTime); err != nil {
+			time.Sleep(time.Second - time.Since(dialTime))
+			dialTime = time.Now()
+			if err = t.reconnect(); err != nil {
 				continue
 			}
 		}
@@ -177,9 +179,7 @@ func (t *tcpConn) send() {
 	t.closeErr <- t.Conn.Close()
 }
 
-func (t *tcpConn) reconnect(dialTime time.Time) error {
-	time.Sleep(time.Second - time.Since(dialTime))
-	dialTime = time.Now()
+func (t *tcpConn) reconnect() error {
 	addr, ok := t.pool.pick()
 	if !ok {
 		return errEmptyAddr
