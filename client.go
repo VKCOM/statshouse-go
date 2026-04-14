@@ -1,6 +1,7 @@
 package statshouse
 
 import (
+	"context"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -19,6 +20,7 @@ type Client struct {
 	env         string // if set, will be put into key0/env
 	network     string
 	addr        string
+	dialTargets []string // resolved "host:port" (TCP: two used in parallel; UDP: first)
 	conn        netConn
 	packet
 
@@ -98,6 +100,13 @@ func (c *Client) ConfigureEx(args ConfigureArgs) {
 	c.env = args.DefaultEnv
 	c.network = args.Network
 	c.addr = args.StatsHouseAddr
+	var err error
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c.dialTargets, err = resolveDialTargets(ctx, c.network, c.addr)
+	if err != nil {
+		args.Logger("[statshouse] resolve address %q: %v", c.addr, err)
+	}
 	if c.conn != nil {
 		err := c.conn.Close()
 		if err != nil {
@@ -106,7 +115,7 @@ func (c *Client) ConfigureEx(args ConfigureArgs) {
 		c.conn = nil
 	}
 	// update packet size
-	if maxSize := maxPacketSize(args.Network, args.StatsHouseAddr); maxSize != c.packet.maxSize {
+	if maxSize := maxPacketSize(args.Network, c.dialTargets[0]); maxSize != c.packet.maxSize {
 		c.packet = packet{
 			buf:     make([]byte, batchHeaderLen, maxSize),
 			maxSize: maxSize,
