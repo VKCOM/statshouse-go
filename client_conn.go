@@ -155,7 +155,7 @@ func (t *tcpConn) Close() error {
 }
 
 func (t *tcpConn) send() {
-	var err error          // last write or connect error
+	var err = errEmptyAddr // last write or connect error
 	var dialTime time.Time // time of last reconnect start
 	for buf := range t.w {
 		if len(buf) == 0 {
