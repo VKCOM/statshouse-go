@@ -163,7 +163,9 @@ func (t *tcpConn) send() {
 		}
 		for err != nil {
 			// reconnect (no more than once per second)
-			_ = t.Conn.Close()
+			if t.Conn != nil {
+				_ = t.Conn.Close()
+			}
 			time.Sleep(time.Second - time.Since(dialTime))
 			dialTime = time.Now()
 			if err = t.reconnect(); err != nil {
@@ -176,7 +178,10 @@ func (t *tcpConn) send() {
 		}
 		t.reportWouldBlockIfAny(buf)
 	}
-	t.closeErr <- t.Conn.Close()
+	if t.Conn != nil {
+		err = t.Conn.Close()
+	}
+	t.closeErr <- err
 }
 
 func (t *tcpConn) reconnect() error {
