@@ -13,7 +13,7 @@ import (
 
 const (
 	DefaultAddr    = "127.0.0.1:13337"
-	DefaultNetwork = "udp"
+	DefaultNetwork = "tcp"
 	// You can add this tag instead of calling StringTop functions family.
 	// This is especialy useful, if you are going to send value or unique, as StringTop family is for counters only.
 	StringTopTag      = 47
