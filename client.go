@@ -115,7 +115,7 @@ func (c *Client) ConfigureEx(args ConfigureArgs) {
 		c.conn = nil
 	}
 	// update packet size
-	if maxSize := maxPacketSize(args.Network, c.dialTargets[0]); maxSize != c.packet.maxSize {
+	if maxSize := maxPacketSize(args.Network, c.dialTargets); maxSize != c.packet.maxSize {
 		c.packet = packet{
 			buf:     make([]byte, batchHeaderLen, maxSize),
 			maxSize: maxSize,
