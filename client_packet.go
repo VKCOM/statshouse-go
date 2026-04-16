@@ -146,17 +146,14 @@ func fillTag(k *metricKeyTransport, tagName string, tagValue string) {
 	k.hasEnv = k.hasEnv || tagName == "0" || tagName == "env" || tagName == "key0" // TODO - keep only "0", rest are legacy
 }
 
-func maxPacketSize(network string, targets []string) int {
+func maxPacketSize(network string, addr string) int {
 	switch network {
 	case "tcp":
 		return math.MaxUint16
 	case "unixgram":
 		return 1232
 	default:
-		if len(targets) != 1 {
-			return 1232
-		}
-		addr, err := net.ResolveUDPAddr("udp", targets[0])
+		addr, err := net.ResolveUDPAddr("udp", addr)
 		switch {
 		case err == nil && addr.IP.IsLoopback():
 			if runtime.GOOS == "darwin" {

@@ -1,6 +1,7 @@
 package statshouse
 
 import (
+	"context"
 	"errors"
 	"net"
 	"sync"
@@ -57,6 +58,10 @@ func (d *tcpPoolConn) Write(b []byte) ([]byte, error) {
 	if !errors.Is(err, errWouldBlock) {
 		return b, err
 	}
+	if d.secondary == nil {
+		d.primary.wouldBlockSize.Add(int32(len(b)))
+		return b, errWouldBlock
+	}
 	b, err = d.secondary.Write(b)
 	if err == nil {
 		d.primary, d.secondary = d.secondary, d.primary
@@ -72,6 +77,9 @@ func (d *tcpPoolConn) Write(b []byte) ([]byte, error) {
 func (d *tcpPoolConn) Close() error {
 	d.closed.Store(true)
 	err1 := d.primary.Close()
+	if d.secondary == nil {
+		return err1
+	}
 	err2 := d.secondary.Close()
 	if err1 != nil {
 		return err1
@@ -80,6 +88,13 @@ func (d *tcpPoolConn) Close() error {
 }
 
 func (c *Client) netDial() (netConn, error) {
+	targets, err := resolveDialTargets(c.network, c.addr)
+	if err != nil {
+		c.rareLog("[statshouse] resolve address %q: %v", c.addr, err)
+		return nil, err
+	}
+	c.dialTargets = targets
+
 	if c.network == "tcp" {
 		return c.netDialTCP()
 	}
@@ -96,28 +111,27 @@ func (c *Client) netDial() (netConn, error) {
 }
 
 func (c *Client) netDialTCP() (netConn, error) {
-	targets := c.dialTargets
-	if len(targets) == 0 {
-		targets = []string{c.addr}
-	}
-	pool := newAddressPool(targets)
+	primaryPool, secondaryPool := newAddressPools(c.dialTargets)
 	primary := &tcpConn{
 		Client:   c,
 		app:      c.app,
 		env:      c.env,
-		pool:     pool,
+		pool:     primaryPool,
 		w:        make(chan []byte, tcpConnBucketCount),
 		closeErr: make(chan error, 1),
+	}
+	go primary.send()
+	if secondaryPool == nil {
+		return &tcpPoolConn{primary: primary, secondary: nil}, nil
 	}
 	secondary := &tcpConn{
 		Client:   c,
 		app:      c.app,
 		env:      c.env,
-		pool:     pool,
+		pool:     secondaryPool,
 		w:        make(chan []byte, tcpConnBucketCount),
 		closeErr: make(chan error, 1),
 	}
-	go primary.send()
 	go secondary.send()
 	return &tcpPoolConn{primary: primary, secondary: secondary}, nil
 }
@@ -185,11 +199,40 @@ func (t *tcpConn) send() {
 }
 
 func (t *tcpConn) reconnect() error {
+	if t.pool == nil {
+		return errEmptyAddr
+	}
 	addr, ok := t.pool.pick()
 	if !ok {
 		return errEmptyAddr
 	}
-	conn, err := (&net.Dialer{Timeout: 5 * time.Second}).Dial("tcp", addr)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return err
+	}
+
+	var dialAddrs []string
+	if ip := net.ParseIP(host); ip != nil {
+		dialAddrs = []string{net.JoinHostPort(host, port)}
+	} else {
+		recs, err := net.DefaultResolver.LookupIPAddr(context.Background(), host)
+		if err != nil {
+			t.rareLog("[statshouse] failed to resolve statshouse: %v", err)
+			return err
+		}
+		dialAddrs = make([]string, 0, len(recs))
+		for _, ipa := range recs {
+			dialAddrs = append(dialAddrs, net.JoinHostPort(ipa.String(), port))
+		}
+	}
+
+	var conn net.Conn
+	for _, dialAddr := range dialAddrs {
+		conn, err = (&net.Dialer{Timeout: 5 * time.Second}).Dial("tcp", dialAddr)
+		if err == nil {
+			break
+		}
+	}
 	if err != nil {
 		t.rareLog("[statshouse] failed to dial statshouse: %v", err)
 		return err
