@@ -13,7 +13,7 @@ import (
 
 const (
 	DefaultAddr    = "127.0.0.1:13337"
-	DefaultNetwork = "udp"
+	DefaultNetwork = "tcp"
 	// You can add this tag instead of calling StringTop functions family.
 	// This is especialy useful, if you are going to send value or unique, as StringTop family is for counters only.
 	StringTopTag      = 47
@@ -40,6 +40,7 @@ var (
 	globalClient       = NewClientEx(ConfigureArgs{StatsHouseAddr: DefaultAddr})
 	errWouldBlock      = fmt.Errorf("would block")
 	errWriteAfterClose = fmt.Errorf("write after close")
+	errEmptyAddr       = fmt.Errorf("empty statshouse address")
 
 	tagIDs = [maxTags]string{
 		"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15",
@@ -61,7 +62,7 @@ type ConfigureArgs struct {
 	AppName        string
 	DefaultEnv     string
 	Network        string // default "udp"
-	StatsHouseAddr string // default "127.0.0.1:13337"
+	StatsHouseAddr string // default "127.0.0.1:13337", support comma-separated host:port and dns address
 	MaxBucketSize  int    // default 1024
 }
 

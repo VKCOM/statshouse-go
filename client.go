@@ -19,6 +19,7 @@ type Client struct {
 	env         string // if set, will be put into key0/env
 	network     string
 	addr        string
+	dialTargets []string // resolved "host:port" (TCP: two used in parallel; UDP: first)
 	conn        netConn
 	packet
 

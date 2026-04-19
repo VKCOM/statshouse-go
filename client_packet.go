@@ -146,7 +146,7 @@ func fillTag(k *metricKeyTransport, tagName string, tagValue string) {
 	k.hasEnv = k.hasEnv || tagName == "0" || tagName == "env" || tagName == "key0" // TODO - keep only "0", rest are legacy
 }
 
-func maxPacketSize(network, addr string) int {
+func maxPacketSize(network string, addr string) int {
 	switch network {
 	case "tcp":
 		return math.MaxUint16
