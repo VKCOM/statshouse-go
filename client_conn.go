@@ -1,12 +1,19 @@
 package statshouse
 
 import (
-	"context"
 	"errors"
+	"math"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
+)
+
+const dnsThreshold = 0.8 // 80% reconnect error strict => lookup
+
+const (
+	primaryRole = iota
+	secondaryRole
 )
 
 type netConn interface {
@@ -23,11 +30,14 @@ type tcpConn struct {
 	wouldBlockSize atomic.Int32
 
 	*Client
-	app string
-	env string
+	role    int
+	app     string
+	env     string
+	addr    string
+	network string
 	net.Conn
 
-	pool *addressPool
+	pool addressPool
 	w    chan []byte
 
 	closed   atomic.Bool
@@ -57,10 +67,6 @@ func (d *tcpPoolConn) Write(b []byte) ([]byte, error) {
 	}
 	if !errors.Is(err, errWouldBlock) {
 		return b, err
-	}
-	if d.secondary == nil {
-		d.primary.wouldBlockSize.Add(int32(len(b)))
-		return b, errWouldBlock
 	}
 	b, err = d.secondary.Write(b)
 	if err == nil {
@@ -114,20 +120,24 @@ func (c *Client) netDialTCP() (netConn, error) {
 	primaryPool, secondaryPool := newAddressPools(c.dialTargets)
 	primary := &tcpConn{
 		Client:   c,
+		role:     primaryRole,
 		app:      c.app,
 		env:      c.env,
+		addr:     c.addr,
+		network:  c.network,
 		pool:     primaryPool,
 		w:        make(chan []byte, tcpConnBucketCount),
 		closeErr: make(chan error, 1),
 	}
 	go primary.send()
-	if secondaryPool == nil {
-		return &tcpPoolConn{primary: primary, secondary: nil}, nil
-	}
+
 	secondary := &tcpConn{
 		Client:   c,
+		role:     secondaryRole,
 		app:      c.app,
 		env:      c.env,
+		addr:     c.addr,
+		network:  c.network,
 		pool:     secondaryPool,
 		w:        make(chan []byte, tcpConnBucketCount),
 		closeErr: make(chan error, 1),
@@ -169,22 +179,35 @@ func (t *tcpConn) Close() error {
 }
 
 func (t *tcpConn) send() {
+	errStreak := 0
 	var err = errEmptyAddr // last write or connect error
 	var dialTime time.Time // time of last reconnect start
-	for buf := range t.w {
-		if len(buf) == 0 {
-			continue
-		}
-		for err != nil {
+	for {
+		if err != nil {
 			// reconnect (no more than once per second)
 			if t.Conn != nil {
 				_ = t.Conn.Close()
 			}
 			time.Sleep(time.Second - time.Since(dialTime))
 			dialTime = time.Now()
+			if errStreak >= int(math.Ceil(float64(t.pool.len())*dnsThreshold)) {
+				errStreak = 0
+				if t.closed.Load() {
+					break
+				}
+				if err = t.refreshPool(); err != nil {
+					continue
+				}
+			}
 			if err = t.reconnect(); err != nil {
+				errStreak++
 				continue
 			}
+			errStreak = 0
+		}
+		buf, ok := <-t.w
+		if !ok {
+			break
 		}
 		if _, err = t.Conn.Write(buf); err != nil {
 			t.rareLog("[statshouse] failed to send data to statshouse: %v", err)
@@ -199,40 +222,12 @@ func (t *tcpConn) send() {
 }
 
 func (t *tcpConn) reconnect() error {
-	if t.pool == nil {
-		return errEmptyAddr
-	}
 	addr, ok := t.pool.pick()
 	if !ok {
 		return errEmptyAddr
 	}
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return err
-	}
 
-	var dialAddrs []string
-	if ip := net.ParseIP(host); ip != nil {
-		dialAddrs = []string{net.JoinHostPort(host, port)}
-	} else {
-		recs, err := net.DefaultResolver.LookupIPAddr(context.Background(), host)
-		if err != nil {
-			t.rareLog("[statshouse] failed to resolve statshouse: %v", err)
-			return err
-		}
-		dialAddrs = make([]string, 0, len(recs))
-		for _, ipa := range recs {
-			dialAddrs = append(dialAddrs, net.JoinHostPort(ipa.String(), port))
-		}
-	}
-
-	var conn net.Conn
-	for _, dialAddr := range dialAddrs {
-		conn, err = (&net.Dialer{Timeout: 5 * time.Second}).Dial("tcp", dialAddr)
-		if err == nil {
-			break
-		}
-	}
+	conn, err := (&net.Dialer{Timeout: 5 * time.Second}).Dial("tcp", addr)
 	if err != nil {
 		t.rareLog("[statshouse] failed to dial statshouse: %v", err)
 		return err
@@ -244,6 +239,24 @@ func (t *tcpConn) reconnect() error {
 		return err
 	}
 	t.Conn = conn
+	return nil
+}
+
+func (t *tcpConn) refreshPool() error {
+	targets, err := resolveDialTargets(t.network, t.addr)
+	if err != nil {
+		return err
+	}
+	primary, secondary := newAddressPools(targets)
+	switch t.role {
+	case primaryRole:
+		t.pool = primary
+	case secondaryRole:
+		t.pool = secondary
+	}
+	if t.pool.len() == 0 {
+		return errEmptyAddr
+	}
 	return nil
 }
 

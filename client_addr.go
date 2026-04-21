@@ -13,13 +13,17 @@ type addressPool struct {
 	head  int
 }
 
-func newAddressPools(addrs []string) (primary *addressPool, secondary *addressPool) {
+func newAddressPools(addrs []string) (primary addressPool, secondary addressPool) {
 	mid := (len(addrs) + 1) / 2 // primary gets the extra element
-	primary = &addressPool{addrs: addrs[:mid]}
+	primary = addressPool{addrs: addrs[:mid]}
 	if mid < len(addrs) {
-		secondary = &addressPool{addrs: addrs[mid:]}
+		secondary = addressPool{addrs: addrs[mid:]}
 	}
 	return primary, secondary
+}
+
+func (p *addressPool) len() int {
+	return len(p.addrs)
 }
 
 func (p *addressPool) pick() (string, bool) {
