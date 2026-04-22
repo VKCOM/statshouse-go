@@ -21,7 +21,7 @@ type Client struct {
 	network     string
 	addr        string
 	dialTargets []string // resolved "host:port" (TCP: two used in parallel; UDP: first)
-	hostTag     string   // sent as "_h" for farm contributors when endpoint is DNS or multi-address
+	hostTag     string
 	conn        netConn
 	packet
 
