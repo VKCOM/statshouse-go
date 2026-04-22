@@ -73,13 +73,11 @@ func resolveDialTargets(network, rawAddr string) ([]string, error) {
 	return addrs, nil
 }
 
-func hasDNS(rawAddr string) bool {
-	for _, ep := range strings.Split(rawAddr, ",") {
-		host, _, err := net.SplitHostPort(ep)
-		if err != nil {
-			continue
-		}
-		if net.ParseIP(host) == nil {
+func pinnedScenario(rawAddr string) bool {
+	addrs := strings.Split(rawAddr, ",")
+	if len(addrs) == 1 {
+		host, _, _ := net.SplitHostPort(addrs[0])
+		if net.ParseIP(host) != nil {
 			return true
 		}
 	}

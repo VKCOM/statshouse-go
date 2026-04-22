@@ -273,12 +273,12 @@ func (t *tcpConn) reportWouldBlockIfAny(buf []byte) {
 	}
 	k := metricKeyTransport{
 		name: "__src_client_write_err",
-		host: t.host,
 	}
 	fillTag(&k, "0", t.env)
 	fillTag(&k, "1", "1")   // lang: golang
 	fillTag(&k, "2", "1")   // kind: would block
 	fillTag(&k, "3", t.app) // application name
+	fillTag(&k, "_h", t.hostTag)
 	p.sendValues(nil, &k, "", 0, 0, []float64{float64(n)})
 	p.writeBatchHeader()
 	if _, err := t.Conn.Write(p.buf); err != nil {
