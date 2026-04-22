@@ -29,6 +29,7 @@ const (
 	valueFieldsMask      = uint32(1 << 1)
 	uniqueFieldsMask     = uint32(1 << 2)
 	tsFieldsMask         = uint32(1 << 4)
+	hostFieldsMask       = uint32(1 << 5)
 	batchHeaderLen       = 4 * tlInt32Size // data length (for TCP), tag, fields_mask, # of batches
 	maxTags              = 48
 	maxEmptySendCount    = 2   // before bucket detach

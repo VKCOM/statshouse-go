@@ -20,6 +20,7 @@ type metricKeyTransport struct {
 	tags   internalTags
 	numSet int
 	hasEnv bool
+	host   string
 }
 
 func (p *packet) sendCounter(c *Client, k *metricKeyTransport, skey string, counter float64, tsUnixSec uint32) {
@@ -81,6 +82,9 @@ func (p *packet) writeHeaderImpl(k *metricKeyTransport, skey string, counter flo
 	if tsUnixSec != 0 {
 		fieldsMask |= tsFieldsMask
 	}
+	if k.host != "" {
+		fieldsMask |= hostFieldsMask
+	}
 	p.buf = basictl.NatWrite(p.buf, fieldsMask)
 	p.buf = basictl.StringWriteTruncated(p.buf, k.name)
 	// can write more than maxTags pairs, but this is allowed by statshouse
@@ -100,6 +104,9 @@ func (p *packet) writeHeaderImpl(k *metricKeyTransport, skey string, counter flo
 	}
 	if fieldsMask&tsFieldsMask != 0 {
 		p.buf = basictl.NatWrite(p.buf, tsUnixSec)
+	}
+	if fieldsMask&hostFieldsMask != 0 {
+		p.buf = basictl.StringWriteTruncated(p.buf, k.host)
 	}
 }
 

@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const dnsThreshold = 0.8 // 80% reconnect error strict => lookup
+const dnsThreshold = 0.7 // 70% reconnect error strict => lookup
 
 const (
 	primaryRole = iota
@@ -273,6 +273,7 @@ func (t *tcpConn) reportWouldBlockIfAny(buf []byte) {
 	}
 	k := metricKeyTransport{
 		name: "__src_client_write_err",
+		host: t.host,
 	}
 	fillTag(&k, "0", t.env)
 	fillTag(&k, "1", "1")   // lang: golang
