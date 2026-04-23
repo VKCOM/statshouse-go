@@ -2,18 +2,10 @@ package statshouse
 
 import (
 	"errors"
-	"math"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
-)
-
-const dnsThreshold = 0.7 // 70% reconnect error strict => lookup
-
-const (
-	primaryRole = iota
-	secondaryRole
 )
 
 type netConn interface {
@@ -30,15 +22,15 @@ type tcpConn struct {
 	wouldBlockSize atomic.Int32
 
 	*Client
-	role    int
 	app     string
 	env     string
 	addr    string
 	network string
 	net.Conn
 
-	pool addressPool
-	w    chan []byte
+	poolMu sync.Mutex
+	pool   addressPool
+	w      chan []byte
 
 	closed   atomic.Bool
 	closeErr chan error
@@ -48,15 +40,17 @@ type tcpPoolConn struct {
 	primary   *tcpConn
 	secondary *tcpConn
 	routeMu   sync.Mutex
-	closed    atomic.Bool
+	closed    chan struct{}
 }
 
 func (d *tcpPoolConn) Write(b []byte) ([]byte, error) {
 	if len(b) == 0 {
 		return b, nil
 	}
-	if d.closed.Load() {
+	select {
+	case <-d.closed:
 		return make([]byte, cap(b)), errWriteAfterClose
+	default:
 	}
 	d.routeMu.Lock()
 	defer d.routeMu.Unlock()
@@ -81,11 +75,8 @@ func (d *tcpPoolConn) Write(b []byte) ([]byte, error) {
 }
 
 func (d *tcpPoolConn) Close() error {
-	d.closed.Store(true)
+	close(d.closed)
 	err1 := d.primary.Close()
-	if d.secondary == nil {
-		return err1
-	}
 	err2 := d.secondary.Close()
 	if err1 != nil {
 		return err1
@@ -120,7 +111,6 @@ func (c *Client) netDialTCP() (netConn, error) {
 	primaryPool, secondaryPool := newAddressPools(c.dialTargets)
 	primary := &tcpConn{
 		Client:   c,
-		role:     primaryRole,
 		app:      c.app,
 		env:      c.env,
 		addr:     c.addr,
@@ -133,7 +123,6 @@ func (c *Client) netDialTCP() (netConn, error) {
 
 	secondary := &tcpConn{
 		Client:   c,
-		role:     secondaryRole,
 		app:      c.app,
 		env:      c.env,
 		addr:     c.addr,
@@ -143,7 +132,34 @@ func (c *Client) netDialTCP() (netConn, error) {
 		closeErr: make(chan error, 1),
 	}
 	go secondary.send()
-	return &tcpPoolConn{primary: primary, secondary: secondary}, nil
+	poolConn := &tcpPoolConn{
+		primary:   primary,
+		secondary: secondary,
+		closed:    make(chan struct{}),
+	}
+	go poolConn.runDNSRefresh(c.network, c.addr)
+	return poolConn, nil
+}
+
+func (d *tcpPoolConn) runDNSRefresh(network, addr string) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	cl := d.primary.Client
+	for {
+		select {
+		case <-d.closed:
+			return
+		case <-ticker.C:
+			targets, err := resolveDialTargets(network, addr)
+			if err != nil {
+				cl.rareLog("[statshouse] dns refresh resolve %q: %v", addr, err)
+				continue
+			}
+			primaryPool, secondaryPool := newAddressPools(targets)
+			d.primary.replacePool(primaryPool)
+			d.secondary.replacePool(secondaryPool)
+		}
+	}
 }
 
 func (t *datagramConn) Write(b []byte) ([]byte, error) {
@@ -179,7 +195,6 @@ func (t *tcpConn) Close() error {
 }
 
 func (t *tcpConn) send() {
-	errStreak := 0
 	var err = errEmptyAddr // last write or connect error
 	var dialTime time.Time // time of last reconnect start
 	for {
@@ -190,20 +205,12 @@ func (t *tcpConn) send() {
 			}
 			time.Sleep(time.Second - time.Since(dialTime))
 			dialTime = time.Now()
-			if errStreak >= int(math.Ceil(float64(t.pool.len())*dnsThreshold)) {
-				errStreak = 0
+			if err = t.reconnect(); err != nil {
 				if t.closed.Load() {
 					break
 				}
-				if err = t.refreshPool(); err != nil {
-					continue
-				}
-			}
-			if err = t.reconnect(); err != nil {
-				errStreak++
 				continue
 			}
-			errStreak = 0
 		}
 		buf, ok := <-t.w
 		if !ok {
@@ -222,7 +229,9 @@ func (t *tcpConn) send() {
 }
 
 func (t *tcpConn) reconnect() error {
+	t.poolMu.Lock()
 	addr, ok := t.pool.pick()
+	t.poolMu.Unlock()
 	if !ok {
 		return errEmptyAddr
 	}
@@ -242,22 +251,10 @@ func (t *tcpConn) reconnect() error {
 	return nil
 }
 
-func (t *tcpConn) refreshPool() error {
-	targets, err := resolveDialTargets(t.network, t.addr)
-	if err != nil {
-		return err
-	}
-	primary, secondary := newAddressPools(targets)
-	switch t.role {
-	case primaryRole:
-		t.pool = primary
-	case secondaryRole:
-		t.pool = secondary
-	}
-	if t.pool.len() == 0 {
-		return errEmptyAddr
-	}
-	return nil
+func (t *tcpConn) replacePool(p addressPool) {
+	t.poolMu.Lock()
+	t.pool = p
+	t.poolMu.Unlock()
 }
 
 func (t *tcpConn) reportWouldBlockIfAny(buf []byte) {
