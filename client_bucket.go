@@ -109,7 +109,9 @@ func (b *bucket) send(c *Client, tsUnixSec uint32) {
 	if !k.hasEnv {
 		fillTag(&k, "0", c.env)
 	}
-	fillTag(&k, "_h", c.hostTag)
+	if !k.hasHost {
+		fillTag(&k, "_h", c.hostTag)
+	}
 	if b.countToSend > 0 {
 		c.sendCounter(c, &k, "", b.countToSend, tsUnixSec)
 	}

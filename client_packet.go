@@ -16,10 +16,11 @@ type packet struct {
 }
 
 type metricKeyTransport struct {
-	name   string
-	tags   internalTags
-	numSet int
-	hasEnv bool
+	name    string
+	tags    internalTags
+	numSet  int
+	hasEnv  bool
+	hasHost bool
 }
 
 func (p *packet) sendCounter(c *Client, k *metricKeyTransport, skey string, counter float64, tsUnixSec uint32) {
@@ -144,6 +145,7 @@ func fillTag(k *metricKeyTransport, tagName string, tagValue string) {
 	k.tags[k.numSet] = [2]string{tagName, tagValue}
 	k.numSet++
 	k.hasEnv = k.hasEnv || tagName == "0" || tagName == "env" || tagName == "key0" // TODO - keep only "0", rest are legacy
+	k.hasHost = k.hasHost || tagName == "_h"
 }
 
 func maxPacketSize(network string, addr string) int {
