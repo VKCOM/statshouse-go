@@ -7,7 +7,7 @@ import (
 )
 
 func main() {
-    c := statshouse.NewClientEx(statshouse.ConfigureArgs{StatsHouseAddr: statshouse.DefaultAddr, Network: "tcp"})
+    c := statshouse.NewClientEx(statshouse.ConfigureArgs{StatsHouseAddr: "{{ .StatsHouseAddr }}", Network: "tcp"})
     defer c.Close()
     var t statshouse.NamedTags
     for i := 0; i < {{.NumberOfIterations}}; i++ {

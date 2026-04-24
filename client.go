@@ -2,6 +2,7 @@ package statshouse
 
 import (
 	"log"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,6 +21,7 @@ type Client struct {
 	network     string
 	addr        string
 	dialTargets []string // resolved "host:port" (TCP: two used in parallel; UDP: first)
+	hostTag     string
 	conn        netConn
 	packet
 
@@ -99,6 +101,11 @@ func (c *Client) ConfigureEx(args ConfigureArgs) {
 	c.env = args.DefaultEnv
 	c.network = args.Network
 	c.addr = args.StatsHouseAddr
+	if hostname, err := os.Hostname(); err != nil {
+		args.Logger("[statshouse] failed to read hostname: %v", err)
+	} else {
+		c.hostTag = hostname
+	}
 	if c.conn != nil {
 		err := c.conn.Close()
 		if err != nil {

@@ -43,6 +43,10 @@ func resolveDialTargets(network, rawAddr string) ([]string, error) {
 	if network == "unixgram" {
 		return []string{rawAddr}, nil
 	}
+	if network == "udp" {
+		// For UDP we intentionally keep DNS names unresolved and dial hostnames directly.
+		return strings.Split(rawAddr, ","), nil
+	}
 	var addrs []string
 	for _, ep := range strings.Split(rawAddr, ",") {
 		host, port, err := net.SplitHostPort(strings.TrimSpace(ep))
