@@ -41,6 +41,7 @@ type tcpPoolConn struct {
 	secondary *tcpConn
 	routeMu   sync.Mutex
 	closed    chan struct{}
+	closeOnce sync.Once
 }
 
 func (d *tcpPoolConn) Write(b []byte) ([]byte, error) {
@@ -74,14 +75,16 @@ func (d *tcpPoolConn) Write(b []byte) ([]byte, error) {
 	return b, err
 }
 
-func (d *tcpPoolConn) Close() error {
-	close(d.closed)
-	err1 := d.primary.Close()
-	err2 := d.secondary.Close()
-	if err1 != nil {
-		return err1
-	}
-	return err2
+func (d *tcpPoolConn) Close() (err error) {
+	d.closeOnce.Do(func() {
+		close(d.closed)
+		err = d.primary.Close()
+		err2 := d.secondary.Close()
+		if err == nil {
+			err = err2
+		}
+	})
+	return
 }
 
 func (c *Client) netDial() (netConn, error) {
