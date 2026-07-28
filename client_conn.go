@@ -1,11 +1,22 @@
 package statshouse
 
 import (
+	"encoding/binary"
 	"errors"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
+)
+
+const (
+	tcpPrefix              = "statshousev"
+	tcpMagicV2             = byte('2')
+	defaultDialTimeout     = 5 * time.Second
+	defaultReconnectDelay  = time.Second
+	defaultWriteTimeout    = 15 * time.Second
+	writeTimeoutAccuracy   = 2 * time.Second
+	defaultStuckReconDelay = 30 * time.Second
 )
 
 type netConn interface {
@@ -22,24 +33,24 @@ type tcpConn struct {
 	wouldBlockSize atomic.Int32
 
 	*Client
-	app     string
-	env     string
-	addr    string
-	network string
-	net.Conn
+	app       string
+	env       string
+	handshake string // precomputed reconnect key (copy every connect for safety)
 
-	poolMu sync.Mutex
-	pool   addressPool
-	w      chan []byte
+	poolMu  sync.Mutex
+	pool    addressPool
+	w       chan []byte
+	reconCh chan struct{}
 
 	closed   atomic.Bool
 	closeErr chan error
 }
 
 type tcpPoolConn struct {
+	primPtr   **tcpConn // ptr to primary, nonblocking swap
+	secPtr    **tcpConn // ptr to secondary, nonblocking swap
 	primary   *tcpConn
 	secondary *tcpConn
-	routeMu   sync.Mutex
 	closed    chan struct{}
 	closeOnce sync.Once
 }
@@ -53,19 +64,20 @@ func (d *tcpPoolConn) Write(b []byte) ([]byte, error) {
 		return make([]byte, cap(b)), errWriteAfterClose
 	default:
 	}
-	d.routeMu.Lock()
-	defer d.routeMu.Unlock()
-
-	b, err := d.primary.Write(b)
+	b, err := (*d.primPtr).Write(b)
 	if err == nil {
 		return b, nil
 	}
 	if !errors.Is(err, errWouldBlock) {
 		return b, err
 	}
-	b, err = d.secondary.Write(b)
+	b, err = (*d.secPtr).Write(b)
 	if err == nil {
-		d.primary, d.secondary = d.secondary, d.primary
+		select {
+		case (*d.primPtr).reconCh <- struct{}{}:
+		default:
+		}
+		d.primPtr, d.secPtr = d.secPtr, d.primPtr
 		return b, nil
 	}
 	if errors.Is(err, errWouldBlock) {
@@ -112,27 +124,28 @@ func (c *Client) netDial() (netConn, error) {
 
 func (c *Client) netDialTCP() (netConn, error) {
 	primaryPool, secondaryPool := newAddressPools(c.dialTargets)
+	handshake := buildTCPHandshakeV2(c.hostTag)
 	primary := &tcpConn{
-		Client:   c,
-		app:      c.app,
-		env:      c.env,
-		addr:     c.addr,
-		network:  c.network,
-		pool:     primaryPool,
-		w:        make(chan []byte, tcpConnBucketCount),
-		closeErr: make(chan error, 1),
+		Client:    c,
+		app:       c.app,
+		env:       c.env,
+		handshake: handshake,
+		pool:      primaryPool,
+		w:         make(chan []byte, tcpConnBucketCount),
+		reconCh:   make(chan struct{}, 1),
+		closeErr:  make(chan error, 1),
 	}
 	go primary.send()
 
 	secondary := &tcpConn{
-		Client:   c,
-		app:      c.app,
-		env:      c.env,
-		addr:     c.addr,
-		network:  c.network,
-		pool:     secondaryPool,
-		w:        make(chan []byte, tcpConnBucketCount),
-		closeErr: make(chan error, 1),
+		Client:    c,
+		app:       c.app,
+		env:       c.env,
+		handshake: handshake,
+		pool:      secondaryPool,
+		w:         make(chan []byte, tcpConnBucketCount),
+		reconCh:   make(chan struct{}, 1),
+		closeErr:  make(chan error, 1),
 	}
 	go secondary.send()
 	poolConn := &tcpPoolConn{
@@ -140,6 +153,8 @@ func (c *Client) netDialTCP() (netConn, error) {
 		secondary: secondary,
 		closed:    make(chan struct{}),
 	}
+	poolConn.primPtr = &poolConn.primary
+	poolConn.secPtr = &poolConn.secondary
 	go poolConn.runDNSRefresh(c.network, c.addr)
 	return poolConn, nil
 }
@@ -198,60 +213,92 @@ func (t *tcpConn) Close() error {
 }
 
 func (t *tcpConn) send() {
-	var err = errEmptyAddr // last write or connect error
-	var dialTime time.Time // time of last reconnect start
+	var conn net.Conn
+	var err error
+	var lastDial time.Time
+	var lastStuckRecon = time.Now()
+	var writeDeadline time.Time
+loop:
 	for {
-		if err != nil {
-			// reconnect (no more than once per second)
-			if t.Conn != nil {
-				_ = t.Conn.Close()
+		select {
+		case <-t.reconCh:
+			if lastStuckRecon.Add(defaultStuckReconDelay).After(time.Now()) {
+				continue
 			}
-			time.Sleep(time.Second - time.Since(dialTime))
-			dialTime = time.Now()
-			if err = t.reconnect(); err != nil {
+			if conn != nil {
+				_ = conn.Close()
+				conn = nil
+				writeDeadline = time.Time{}
+				lastStuckRecon = time.Now()
+			}
+			continue
+		default:
+		}
+		if conn == nil {
+			time.Sleep(defaultReconnectDelay - time.Since(lastDial))
+			lastDial = time.Now()
+			conn, err = t.reconnect()
+			if err != nil {
 				if t.closed.Load() {
-					break
+					break loop
+				}
+				if !errors.Is(err, errEmptyAddr) { // ignore secondary without address
+					t.rareLog("[statshouse] failed to dial statshouse: %v", err)
 				}
 				continue
 			}
+			writeDeadline = time.Time{}
+		}
+		if defaultWriteTimeout-time.Until(writeDeadline) > writeTimeoutAccuracy {
+			deadline := time.Now().Add(defaultWriteTimeout)
+			if err = conn.SetWriteDeadline(deadline); err != nil {
+				t.rareLog("[statshouse] failed to set write deadline: %v", err)
+				_ = conn.Close()
+				conn = nil
+				writeDeadline = time.Time{}
+				continue
+			}
+			writeDeadline = deadline
 		}
 		buf, ok := <-t.w
 		if !ok {
 			break
 		}
-		if _, err = t.Conn.Write(buf); err != nil {
+		if _, err = conn.Write(buf); err != nil {
 			t.rareLog("[statshouse] failed to send data to statshouse: %v", err)
+			_ = conn.Close()
+			conn = nil
+			writeDeadline = time.Time{}
 			continue // not resend for tcp connect
 		}
-		t.reportWouldBlockIfAny(buf)
+		t.reportWouldBlockIfAny(conn, buf)
 	}
-	if t.Conn != nil {
-		err = t.Conn.Close()
+	err = nil
+	if conn != nil {
+		err = conn.Close()
 	}
 	t.closeErr <- err
 }
 
-func (t *tcpConn) reconnect() error {
+func (t *tcpConn) reconnect() (net.Conn, error) {
 	t.poolMu.Lock()
 	addr, ok := t.pool.pick()
 	t.poolMu.Unlock()
 	if !ok {
-		return errEmptyAddr
+		return nil, errEmptyAddr
 	}
 
-	conn, err := (&net.Dialer{Timeout: 5 * time.Second}).Dial("tcp", addr)
+	conn, err := (&net.Dialer{Timeout: defaultDialTimeout}).Dial("tcp", addr)
 	if err != nil {
 		t.rareLog("[statshouse] failed to dial statshouse: %v", err)
-		return err
+		return nil, err
 	}
-	_, err = conn.Write([]byte("statshousev1"))
-	if err != nil {
+	if _, err = conn.Write([]byte(t.handshake)); err != nil {
 		t.rareLog("[statshouse] failed to send header to statshouse: %v", err)
-		conn.Close()
-		return err
+		_ = conn.Close()
+		return nil, err
 	}
-	t.Conn = conn
-	return nil
+	return conn, nil
 }
 
 func (t *tcpConn) replacePool(p addressPool) {
@@ -260,7 +307,7 @@ func (t *tcpConn) replacePool(p addressPool) {
 	t.poolMu.Unlock()
 }
 
-func (t *tcpConn) reportWouldBlockIfAny(buf []byte) {
+func (t *tcpConn) reportWouldBlockIfAny(conn net.Conn, buf []byte) {
 	n := t.wouldBlockSize.Swap(0)
 	if n == 0 {
 		return
@@ -281,7 +328,25 @@ func (t *tcpConn) reportWouldBlockIfAny(buf []byte) {
 	fillTag(&k, "_h", t.hostTag)
 	p.sendValues(nil, &k, "", 0, 0, []float64{float64(n)})
 	p.writeBatchHeader()
-	if _, err := t.Conn.Write(p.buf); err != nil {
+	if _, err := conn.Write(p.buf); err != nil {
 		t.rareLog("[statshouse] failed to send data to statshouse: %v", err)
 	}
+}
+
+func buildTCPHandshakeV2(hostTag string) string {
+	buf := make([]byte, 0, len(tcpPrefix)+1+tlInt32Size+len(hostTag))
+	buf = append(buf, tcpPrefix...)
+	buf = append(buf, tcpMagicV2)
+	var lenH [tlInt32Size]byte
+	binary.LittleEndian.PutUint32(lenH[:], uint32(len(hostTag)))
+	buf = append(buf, lenH[:]...)
+	buf = append(buf, hostTag...)
+	return string(buf)
+}
+
+func forceValidHostTag(s string) string {
+	if len(s) <= maxHostTagLen {
+		return s
+	}
+	return s[:maxHostTagLen]
 }
