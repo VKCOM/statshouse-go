@@ -104,7 +104,7 @@ func (c *Client) ConfigureEx(args ConfigureArgs) {
 	if hostname, err := os.Hostname(); err != nil {
 		args.Logger("[statshouse] failed to read hostname: %v", err)
 	} else {
-		c.hostTag = hostname
+		c.hostTag = forceValidHostTag(hostname)
 	}
 	if c.conn != nil {
 		err := c.conn.Close()

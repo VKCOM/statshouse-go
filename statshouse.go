@@ -34,6 +34,7 @@ const (
 	maxEmptySendCount    = 2   // before bucket detach
 	tcpConnBucketCount   = 512 // 32 MiB max TCP send buffer size
 	defaultMaxBucketSize = 1024
+	maxHostTagLen        = 128
 )
 
 var (
@@ -61,7 +62,7 @@ type ConfigureArgs struct {
 	Logger         LoggerFunc
 	AppName        string
 	DefaultEnv     string
-	Network        string // default "udp"
+	Network        string // default "tcp"
 	StatsHouseAddr string // default "127.0.0.1:13337", support comma-separated host:port and dns address
 	MaxBucketSize  int    // default 1024
 }
