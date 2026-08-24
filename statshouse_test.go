@@ -11,17 +11,29 @@ import (
 	"fmt"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
-
+	"unicode/utf8"
+	
 	"github.com/VKCOM/statshouse-go"
 	"github.com/stretchr/testify/require"
 )
 
+func TestForceValidHostTagUTF8(t *testing.T) {
+	// Construct a string with 2-byte UTF-8 runes (д is 2 bytes: 0xd0, 0xb4)
+	// 65 characters = 130 bytes, crossing the 128-byte limit
+	input := strings.Repeat("д", 65)
+	result := statshouse.ForceValidHostTag(input)
+	
+	require.True(t, utf8.ValidString(result))
+	require.LessOrEqual(t, len(result), 128)
+}
+
 func TestCountRace(t *testing.T) {
 	c := statshouse.NewClient(t.Logf, "udp", "" /* avoid sending anything */, "")
-
+	
 	var wg sync.WaitGroup
 	for i := 0; i < 1000; i++ {
 		wg.Add(1)
@@ -100,7 +112,7 @@ func BenchmarkRawValue(b *testing.B) {
 func BenchmarkCount4(b *testing.B) {
 	c := statshouse.NewClient(b.Logf, "udp", "" /* avoid sending anything */, "")
 	b.ResetTimer()
-
+	
 	for i := 0; i < b.N; i++ {
 		c.Count("test_stat", statshouse.Tags{1: "hello", 2: "brave", 3: "new", 4: "world"}, float64(i))
 	}
@@ -110,7 +122,7 @@ func BenchmarkRawCount(b *testing.B) {
 	c := statshouse.NewClient(b.Logf, "udp", "" /* avoid sending anything */, "")
 	s := c.MetricRef("test_stat", statshouse.Tags{1: "hello", 2: "brave", 3: "new", 4: "world"})
 	b.ResetTimer()
-
+	
 	for i := 0; i < b.N; i++ {
 		s.Count(float64(i))
 	}
@@ -119,7 +131,7 @@ func BenchmarkRawCount(b *testing.B) {
 func BenchmarkLabeledValue2(b *testing.B) {
 	c := statshouse.NewClient(b.Logf, "udp", "" /* avoid sending anything */, "")
 	b.ResetTimer()
-
+	
 	for i := 0; i < b.N; i++ {
 		c.NamedValue("test_stat", statshouse.NamedTags{{"hello", "world"}, {"world", "hello"}}, float64(i))
 	}
@@ -129,7 +141,7 @@ func BenchmarkRawLabeledValue(b *testing.B) {
 	c := statshouse.NewClient(b.Logf, "udp", "" /* avoid sending anything */, "")
 	s := c.MetricNamedRef("test_stat", statshouse.NamedTags{{"hello", "world"}, {"world", "hello"}})
 	b.ResetTimer()
-
+	
 	for i := 0; i < b.N; i++ {
 		s.Value(float64(i))
 	}
@@ -138,7 +150,7 @@ func BenchmarkRawLabeledValue(b *testing.B) {
 func BenchmarkLabeledCount4(b *testing.B) {
 	c := statshouse.NewClient(b.Logf, "udp", "" /* avoid sending anything */, "")
 	b.ResetTimer()
-
+	
 	for i := 0; i < b.N; i++ {
 		c.NamedCount("test_stat", statshouse.NamedTags{{"hello", "world"}, {"world", "hello"}, {"hello1", "world"}, {"world1", "hello"}}, float64(i))
 	}
@@ -148,7 +160,7 @@ func BenchmarkRawLabeledCount(b *testing.B) {
 	c := statshouse.NewClient(b.Logf, "udp", "" /* avoid sending anything */, "")
 	s := c.MetricNamedRef("test_stat", statshouse.NamedTags{{"hello", "world"}, {"world", "hello"}, {"hello1", "world"}, {"world1", "hello"}})
 	b.ResetTimer()
-
+	
 	for i := 0; i < b.N; i++ {
 		s.Count(float64(i))
 	}

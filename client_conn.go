@@ -31,17 +31,17 @@ type datagramConn struct { // either UDP or unixgram
 
 type tcpConn struct {
 	wouldBlockSize atomic.Int32
-
+	
 	*Client
 	app       string
 	env       string
 	handshake string // precomputed reconnect key (copy every connect for safety)
-
+	
 	poolMu  sync.Mutex
 	pool    addressPool
 	w       chan []byte
 	reconCh chan struct{}
-
+	
 	closed   atomic.Bool
 	closeErr chan error
 }
@@ -106,7 +106,7 @@ func (c *Client) netDial() (netConn, error) {
 		return nil, err
 	}
 	c.dialTargets = targets
-
+	
 	if c.network == "tcp" {
 		return c.netDialTCP()
 	}
@@ -136,7 +136,7 @@ func (c *Client) netDialTCP() (netConn, error) {
 		closeErr:  make(chan error, 1),
 	}
 	go primary.send()
-
+	
 	secondary := &tcpConn{
 		Client:    c,
 		app:       c.app,
@@ -287,7 +287,7 @@ func (t *tcpConn) reconnect() (net.Conn, error) {
 	if !ok {
 		return nil, errEmptyAddr
 	}
-
+	
 	conn, err := (&net.Dialer{Timeout: defaultDialTimeout}).Dial("tcp", addr)
 	if err != nil {
 		t.rareLog("[statshouse] failed to dial statshouse: %v", err)
@@ -348,5 +348,12 @@ func forceValidHostTag(s string) string {
 	if len(s) <= maxHostTagLen {
 		return s
 	}
-	return s[:maxHostTagLen]
+	var last int
+	for i := range s {
+		if i > maxHostTagLen {
+			return s[:last]
+		}
+		last = i
+	}
+	return s[:last]
 }
