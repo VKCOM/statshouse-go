@@ -50,7 +50,7 @@ func (c *Client) MetricNamedRef(metric string, tags NamedTags) MetricRef {
 	// We must do absolute minimum of work here
 	k := metricKeyNamed{name: metric}
 	copy(k.tags[:], tags)
-
+	
 	c.mu.RLock()
 	e, ok := c.wn[k]
 	c.mu.RUnlock()
@@ -137,7 +137,7 @@ func (m *MetricRef) Values(values []float64) {
 
 func (m *MetricRef) ValuesHistoric(values []float64, tsUnixSec uint32) {
 	m.write(tsUnixSec, func(b *bucket) {
-		b.value = append(b.value, values...)
+		b.appendValue(values...)
 	})
 }
 
