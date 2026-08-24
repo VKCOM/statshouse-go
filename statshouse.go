@@ -18,7 +18,7 @@ const (
 	// This is especialy useful, if you are going to send value or unique, as StringTop family is for counters only.
 	StringTopTag      = 47
 	StringTopNamedTag = "47"
-
+	
 	defaultSendPeriod    = 1 * time.Second
 	errorReportingPeriod = time.Minute
 	tlInt32Size          = 4
@@ -42,7 +42,7 @@ var (
 	errWouldBlock      = fmt.Errorf("would block")
 	errWriteAfterClose = fmt.Errorf("write after close")
 	errEmptyAddr       = fmt.Errorf("empty statshouse address")
-
+	
 	tagIDs = [maxTags]string{
 		"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15",
 		"16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31",
@@ -113,8 +113,8 @@ func TrackBucketCount() {
 	globalClient.TrackBucketCount()
 }
 
-func BucketCount() {
-	globalClient.BucketCount()
+func BucketCount() int32 {
+	return globalClient.BucketCount()
 }
 
 // GetMetricRef calls [*Client.MetricRef] on the global [Client].
