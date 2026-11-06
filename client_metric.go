@@ -7,6 +7,7 @@ import "runtime"
 type MetricRef struct {
 	*bucket
 	SurviveNilWrite bool
+	rejectedClient  *Client
 }
 
 // MetricRef is the preferred way to record observations, save the result for later use:
@@ -14,6 +15,11 @@ type MetricRef struct {
 //	var countPacketOK = statshouse.GetMetricRef("foo", statshouse.Tags{1: "ok"})
 //	countPacketOK.Count(1)  // lowest overhead possible
 func (c *Client) MetricRef(metric string, tags Tags) MetricRef {
+	c.markStarted()
+	if c.budget != nil {
+		k := metricKey{name: metric, tags: tags}
+		return c.boundedRef(&k, nil)
+	}
 	// We must do absolute minimum of work here
 	k := metricKey{name: metric, tags: tags}
 	c.mu.RLock()
@@ -41,12 +47,19 @@ func (c *Client) MetricRef(metric string, tags Tags) MetricRef {
 		})
 	}
 	c.w[k] = b
+	c.stats.buckets.Add(1)
 	c.r = append(c.r, b)
 	return MetricRef{bucket: b}
 }
 
 // MetricNamedRef is similar to [*Client.MetricRef] but slightly slower, and allows to specify tags by name.
 func (c *Client) MetricNamedRef(metric string, tags NamedTags) MetricRef {
+	c.markStarted()
+	if c.budget != nil {
+		k := metricKeyNamed{name: metric}
+		copy(k.tags[:], tags)
+		return c.boundedRef(nil, &k)
+	}
 	// We must do absolute minimum of work here
 	k := metricKeyNamed{name: metric}
 	copy(k.tags[:], tags)
@@ -76,6 +89,7 @@ func (c *Client) MetricNamedRef(metric string, tags NamedTags) MetricRef {
 		})
 	}
 	c.wn[k] = b
+	c.stats.buckets.Add(1)
 	c.rn = append(c.rn, b)
 	return MetricRef{bucket: b}
 }
@@ -112,7 +126,7 @@ func (m *MetricRef) Count(n float64) {
 }
 
 func (m *MetricRef) CountHistoric(n float64, tsUnixSec uint32) {
-	m.write(tsUnixSec, func(b *bucket) {
+	m.write(tsUnixSec, 1, func(b *bucket) {
 		b.count += n
 	})
 }
@@ -123,78 +137,93 @@ func (m *MetricRef) Value(value float64) {
 }
 
 func (m *MetricRef) ValueHistoric(value float64, tsUnixSec uint32) {
-	m.write(tsUnixSec, func(b *bucket) {
+	m.write(tsUnixSec, 1, func(b *bucket) {
 		b.appendValue(value)
 	})
 }
 
 // Values records the observed values for distribution estimation.
 func (m *MetricRef) Values(values []float64) {
-	m.write(0, func(b *bucket) {
+	m.write(0, len(values), func(b *bucket) {
 		b.appendValue(values...)
 	})
 }
 
 func (m *MetricRef) ValuesHistoric(values []float64, tsUnixSec uint32) {
-	m.write(tsUnixSec, func(b *bucket) {
-		b.value = append(b.value, values...)
+	m.write(tsUnixSec, len(values), func(b *bucket) {
+		if b.lease != nil {
+			b.appendValue(values...)
+		} else {
+			b.value = append(b.value, values...)
+		}
 	})
 }
 
 // Unique records the observed value for cardinality estimation.
 func (m *MetricRef) Unique(value int64) {
-	m.write(0, func(b *bucket) {
+	m.write(0, 1, func(b *bucket) {
 		b.appendUnique(value)
 	})
 }
 
 func (m *MetricRef) UniqueHistoric(value int64, tsUnixSec uint32) {
-	m.write(tsUnixSec, func(b *bucket) {
+	m.write(tsUnixSec, 1, func(b *bucket) {
 		b.appendUnique(value)
 	})
 }
 
 // Uniques records the observed values for cardinality estimation.
 func (m *MetricRef) Uniques(values []int64) {
-	m.write(0, func(b *bucket) {
-		b.unique = append(b.unique, values...)
+	m.write(0, len(values), func(b *bucket) {
+		if b.lease != nil {
+			b.appendUnique(values...)
+		} else {
+			b.unique = append(b.unique, values...)
+		}
 	})
 }
 
 func (m *MetricRef) UniquesHistoric(values []int64, tsUnixSec uint32) {
-	m.write(tsUnixSec, func(b *bucket) {
+	m.write(tsUnixSec, len(values), func(b *bucket) {
 		b.appendUnique(values...)
 	})
 }
 
 // StringTop records the observed value for popularity estimation.
 func (m *MetricRef) StringTop(value string) {
-	m.write(0, func(b *bucket) {
-		b.stop = append(b.stop, value)
+	m.write(0, 1, func(b *bucket) {
+		b.appendStrings(value)
 	})
 }
 
 func (m *MetricRef) StringTopHistoric(value string, tsUnixSec uint32) {
-	m.write(tsUnixSec, func(b *bucket) {
-		b.stop = append(b.stop, value)
+	m.write(tsUnixSec, 1, func(b *bucket) {
+		b.appendStrings(value)
 	})
 }
 
 // StringsTop records the observed values for popularity estimation.
 func (m *MetricRef) StringsTop(values []string) {
-	m.write(0, func(b *bucket) {
-		b.stop = append(b.stop, values...)
+	m.write(0, len(values), func(b *bucket) {
+		b.appendStrings(values...)
 	})
 }
 
 func (m *MetricRef) StringsTopHistoric(values []string, tsUnixSec uint32) {
-	m.write(tsUnixSec, func(b *bucket) {
-		b.stop = append(b.stop, values...)
+	m.write(tsUnixSec, len(values), func(b *bucket) {
+		b.appendStrings(values...)
 	})
 }
 
-func (m *MetricRef) write(tsUnixSec uint32, fn func(*bucket)) {
+func (m *MetricRef) write(tsUnixSec uint32, observations int, fn func(*bucket)) {
 	if m.bucket == nil && m.SurviveNilWrite {
+		if m.rejectedClient != nil {
+			saturatingAdd(&m.rejectedClient.stats.aggregationDrops, uint64(observations))
+		}
+		return
+	}
+	if m.bucket != nil && m.lease != nil {
+		m.writeBounded(tsUnixSec, observations, fn)
 		return
 	}
 	m.mu.Lock()
@@ -228,6 +257,7 @@ func (m *MetricRef) write(tsUnixSec uint32, fn func(*bucket)) {
 		if m.k.name != "" {
 			if b = c.w[m.k]; b == nil {
 				c.w[m.k] = m.bucket
+				c.stats.buckets.Add(1)
 				c.r = append(c.r, m.bucket)
 				m.tsUnixSec = c.tsUnixSec
 				m.attached = true // attach current
@@ -235,6 +265,7 @@ func (m *MetricRef) write(tsUnixSec uint32, fn func(*bucket)) {
 		} else if m.kn.name != "" {
 			if b = c.wn[m.kn]; b == nil {
 				c.wn[m.kn] = m.bucket
+				c.stats.buckets.Add(1)
 				c.rn = append(c.rn, m.bucket)
 				m.tsUnixSec = c.tsUnixSec
 				m.attached = true // attach current

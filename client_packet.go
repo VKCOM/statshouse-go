@@ -106,31 +106,46 @@ func (p *packet) writeHeaderImpl(k *metricKeyTransport, skey string, counter flo
 
 // returns space reserve or <0 if did not fit
 func (p *packet) writeHeader(c *Client, k *metricKeyTransport, skey string, counter float64, tsUnixSec uint32, fieldsMask uint32, reserveSpace int) int {
-	wasLen := len(p.buf)
-	p.writeHeaderImpl(k, skey, counter, tsUnixSec, fieldsMask)
-	left := p.maxSize - len(p.buf) - reserveSpace
-	if left >= 0 {
-		p.batchCount++
-		return left
+	size := tlInt32Size*2 + encodedStringSize(k.name)
+	if fieldsMask&counterFieldsMask != 0 {
+		size += tlFloat64Size
 	}
-	if wasLen != batchHeaderLen {
-		p.buf = p.buf[:wasLen]
+	if tsUnixSec != 0 {
+		size += tlInt32Size
+	}
+	if skey != "" {
+		size += encodedStringSize("_s") + encodedStringSize(skey)
+	}
+	for i := 0; i < k.numSet; i++ {
+		size += encodedStringSize(k.tags[i][0]) + encodedStringSize(k.tags[i][1])
+	}
+	if size > p.maxSize-batchHeaderLen-reserveSpace {
 		if c != nil {
-			c.flush()
-			p.writeHeaderImpl(k, skey, counter, tsUnixSec, fieldsMask)
-			left = p.maxSize - len(p.buf) - reserveSpace
-			if left >= 0 {
-				p.batchCount++
-				return left
-			}
+			c.rareLog("[statshouse] metric payload too big to fit into packet, discarding")
 		}
-		wasLen = batchHeaderLen
+		return -1
 	}
-	p.buf = p.buf[:wasLen]
-	if c != nil {
-		c.rareLog("[statshouse] metric %q payload too big to fit into packet, discarding", k.name)
+	if size > p.maxSize-len(p.buf)-reserveSpace {
+		if c == nil {
+			return -1
+		}
+		c.flush()
 	}
-	return -1
+	p.writeHeaderImpl(k, skey, counter, tsUnixSec, fieldsMask)
+	p.batchCount++
+	return p.maxSize - len(p.buf) - reserveSpace
+}
+
+func encodedStringSize(s string) int {
+	n := len(s)
+	if n >= (1 << 24) {
+		n = (1 << 24) - 1
+	}
+	prefix := 1
+	if n > 253 {
+		prefix = 4
+	}
+	return (n + prefix + 3) &^ 3
 }
 
 func (c *packet) writeTag(tagName string, tagValue string) {

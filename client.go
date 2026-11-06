@@ -1,14 +1,45 @@
 package statshouse
 
 import (
+	"context"
+	"errors"
+	"hash/maphash"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
 type Client struct {
+	dialMu        sync.Mutex
+	dialCancel    context.CancelFunc
+	closeDeadline atomic.Int64
+
+	startupMu     sync.RWMutex
+	bucketTracker *atomic.Int32
+
+	sendMu        sync.Mutex
+	regularCallMu sync.Mutex
+
+	tcpOptions *tcpOptions
+
+	budget          *MemoryBudget
+	lease           *memoryLease
+	configBytes     int64
+	index           []*bucket
+	head            *bucket
+	indexed         int
+	seed            maphash.Seed
+	started         atomic.Bool
+	stopped         atomic.Bool
+	stats           clientStats
+	callbacks       []regularEntry
+	callbackCache   []func(*Client)
+	callbackRunning bool
+	callbackRetired int64
+
 	// logging
 	logMu sync.Mutex
 	logF  LoggerFunc
@@ -65,11 +96,12 @@ func NewClient(logf LoggerFunc, network string, statsHouseAddr string, defaultEn
 
 func NewClientEx(args ConfigureArgs) *Client {
 	c := &Client{
-		close:        make(chan chan struct{}),
-		w:            map[metricKey]*bucket{},
-		wn:           map[metricKeyNamed]*bucket{},
-		regularFuncs: map[int]func(*Client){},
-		tsUnixSec:    uint32(time.Now().Unix()),
+		close:         make(chan chan struct{}),
+		bucketTracker: &atomic.Int32{},
+		w:             map[metricKey]*bucket{},
+		wn:            map[metricKeyNamed]*bucket{},
+		regularFuncs:  map[int]func(*Client){},
+		tsUnixSec:     uint32(time.Now().Unix()),
 	}
 	c.ConfigureEx(args)
 	go c.run()
@@ -77,6 +109,12 @@ func NewClientEx(args ConfigureArgs) *Client {
 }
 
 func (c *Client) ConfigureEx(args ConfigureArgs) {
+	if c.budget != nil {
+		if err := c.ConfigureWithBudget(args, c.budget); err != nil {
+			c.rareLog("[statshouse] configure rejected: %v", err)
+		}
+		return
+	}
 	if args.Logger == nil {
 		args.Logger = log.Printf
 	}
@@ -126,9 +164,18 @@ func (c *Client) ConfigureEx(args ConfigureArgs) {
 }
 
 // Close the [Client] and flush unsent metrics to the StatsHouse agent.
-// No data will be sent after Close has returned.
+// No data will be sent after Close has returned. TCP draining is best-effort:
+// transport work shares a shutdown deadline and remaining packets are discarded.
+// User-provided measurement callbacks and loggers must return for Close to finish.
 func (c *Client) Close() error {
 	c.closeOnce.Do(func() {
+		c.stopped.Store(true)
+		c.closeDeadline.Store(time.Now().Add(c.transportOptions().closeTimeout).UnixNano())
+		c.dialMu.Lock()
+		if c.dialCancel != nil {
+			c.dialCancel()
+		}
+		c.dialMu.Unlock()
 		ch := make(chan struct{})
 		c.close <- ch
 		<-ch
@@ -138,21 +185,40 @@ func (c *Client) Close() error {
 
 		if c.conn != nil {
 			c.closeErr = c.conn.Close()
+			c.conn = nil
+		}
+		if c.budget != nil {
+			c.cleanupBounded()
 		}
 	})
 	return c.closeErr
 }
 
 // SetEnv changes the default environment associated with [Client].
+// A bounded client keeps its previous environment if the new string cannot fit.
 func (c *Client) SetEnv(env string) {
 	c.transportMu.Lock()
-	c.env = env
+	if c.stopped.Load() {
+		c.transportMu.Unlock()
+		return
+	}
+	if c.budget == nil {
+		c.env = env
+	} else {
+		n := int64(len(env))
+		if c.lease.grow(n) {
+			old := int64(len(c.env))
+			c.env = strings.Clone(env)
+			c.configBytes += n - old
+			c.lease.shrink(old)
+		}
+	}
 	c.transportMu.Unlock()
 }
 
 // For debug purposes. If necessary then it should be first method called on [Client].
 func (c *Client) TrackBucketCount() {
-	c.bucketCount = &atomic.Int32{}
+	c.bucketCount = c.bucketTracker
 }
 
 // For debug purposes. Panics if [Client.TrackBucketCount] wasn't called.
@@ -162,7 +228,12 @@ func (c *Client) BucketCount() int32 {
 
 // StartRegularMeasurement will call f once per collection interval with no gaps or drift,
 // until StopRegularMeasurement is called with the same ID.
+// A bounded client returns zero if the callback registry cannot grow.
 func (c *Client) StartRegularMeasurement(f func(*Client)) (id int) {
+	c.markStarted()
+	if c.budget != nil {
+		return c.startBoundedRegular(f)
+	}
 	c.regularFuncsMu.Lock()
 	defer c.regularFuncsMu.Unlock()
 	c.nextRegularID++
@@ -172,6 +243,10 @@ func (c *Client) StartRegularMeasurement(f func(*Client)) (id int) {
 
 // StopRegularMeasurement cancels StartRegularMeasurement with the specified ID.
 func (c *Client) StopRegularMeasurement(id int) {
+	if c.budget != nil {
+		c.stopBoundedRegular(id)
+		return
+	}
 	c.regularFuncsMu.Lock()
 	defer c.regularFuncsMu.Unlock()
 	delete(c.regularFuncs, id)
@@ -344,6 +419,14 @@ func (c *Client) run() {
 }
 
 func (c *Client) send(nowUnixSec uint32) {
+	c.startupMu.RLock()
+	defer c.startupMu.RUnlock()
+	if c.budget != nil {
+		c.sendBounded(nowUnixSec)
+		return
+	}
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
 	// load & switch second
 	c.mu.Lock()
 	ss, ssn := c.r, c.rn
@@ -394,6 +477,7 @@ func (c *Client) send(nowUnixSec uint32) {
 		c.mu.Lock()
 		c.w[b.k] = nil // release bucket reference
 		delete(c.w, b.k)
+		c.stats.buckets.Add(-1)
 		n--
 		c.r[i] = c.r[n]
 		c.r[n] = nil // release bucket reference
@@ -431,6 +515,7 @@ func (c *Client) send(nowUnixSec uint32) {
 		c.mu.Lock()
 		c.wn[b.kn] = nil // release bucket reference
 		delete(c.wn, b.kn)
+		c.stats.buckets.Add(-1)
 		n--
 		c.rn[i] = c.rn[n]
 		c.rn[n] = nil // release bucket reference
@@ -450,11 +535,18 @@ func (c *Client) send(nowUnixSec uint32) {
 }
 
 func (c *Client) callRegularFuncs(regularCache []func(*Client)) []func(*Client) {
+	c.startupMu.RLock()
+	if c.budget != nil {
+		c.startupMu.RUnlock()
+		c.callBoundedRegular()
+		return regularCache
+	}
 	c.regularFuncsMu.Lock()
 	for _, f := range c.regularFuncs { // TODO - call in order of registration. Use RB-tree when available
 		regularCache = append(regularCache, f)
 	}
 	c.regularFuncsMu.Unlock()
+	c.startupMu.RUnlock()
 	defer func() {
 		if p := recover(); p != nil {
 			c.rareLog("[statshouse] panic inside regular measurement function, ignoring: %v", p)
@@ -480,11 +572,17 @@ func (c *Client) flush() {
 			c.conn = conn
 		}
 	}
+	if c.conn == nil && c.addr != "" {
+		c.dropPacket(len(c.buf))
+	}
 	if c.conn != nil && c.addr != "" {
 		var err error
 		c.buf, err = c.conn.Write(c.buf)
 		if err != nil {
 			c.rareLog("[statshouse] failed to send data to statshouse: %v", err)
+			if !errors.Is(err, errWouldBlock) {
+				c.dropPacket(len(c.buf))
+			}
 		}
 	}
 	c.buf = c.buf[:batchHeaderLen]
@@ -501,4 +599,10 @@ func (c *Client) rareLog(format string, args ...interface{}) {
 	c.logT = time.Now()
 	c.logMu.Unlock()
 	logf(format, args...)
+}
+
+func (c *Client) markStarted() {
+	if !c.started.Load() {
+		c.started.Store(true)
+	}
 }
