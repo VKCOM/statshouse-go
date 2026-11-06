@@ -2,11 +2,19 @@ package statshouse
 
 import (
 	"sync"
+	"unsafe"
 
 	"pgregory.net/rand"
 )
 
 type bucket struct {
+	lease         *memoryLease
+	hash          uint64
+	hashNext      *bucket
+	listNext      *bucket
+	stopBytes     int64
+	stopSendBytes int64
+
 	// readonly
 	c       *Client
 	k       metricKey
@@ -50,9 +58,19 @@ func (b *bucket) appendValue(s ...float64) {
 	for _, v := range s {
 		b.valueCount++
 		if len(b.value) < b.maxSize {
+			if b.lease != nil && !b.growValues(len(b.value)+1) {
+				saturatingAdd(&b.c.stats.aggregationDrops, 1)
+				b.valueCount--
+				continue
+			}
 			b.value = append(b.value, v)
 		} else {
 			if b.r == nil {
+				if b.lease != nil && !b.lease.grow(int64(unsafe.Sizeof(rand.Rand{}))) {
+					saturatingAdd(&b.c.stats.aggregationDrops, 1)
+					b.valueCount--
+					continue
+				}
 				b.r = rand.New()
 			}
 			if n := b.r.Intn(b.valueCount); n < len(b.value) {
@@ -66,9 +84,19 @@ func (b *bucket) appendUnique(s ...int64) {
 	for _, v := range s {
 		b.uniqueCount++
 		if len(b.unique) < b.maxSize {
+			if b.lease != nil && !b.growUniques(len(b.unique)+1) {
+				saturatingAdd(&b.c.stats.aggregationDrops, 1)
+				b.uniqueCount--
+				continue
+			}
 			b.unique = append(b.unique, v)
 		} else {
 			if b.r == nil {
+				if b.lease != nil && !b.lease.grow(int64(unsafe.Sizeof(rand.Rand{}))) {
+					saturatingAdd(&b.c.stats.aggregationDrops, 1)
+					b.uniqueCount--
+					continue
+				}
 				b.r = rand.New()
 			}
 			if n := b.r.Intn(b.uniqueCount); n < len(b.unique) {
@@ -88,6 +116,7 @@ func (b *bucket) swapToSend(nowUnixSec uint32) {
 	b.value, b.valueToSend = b.valueToSend[:0], b.value
 	b.unique, b.uniqueToSend = b.uniqueToSend[:0], b.unique
 	b.stop, b.stopToSend = b.stopToSend[:0], b.stop
+	b.stopBytes, b.stopSendBytes = b.stopSendBytes, b.stopBytes
 }
 
 func (b *bucket) send(c *Client, tsUnixSec uint32) {

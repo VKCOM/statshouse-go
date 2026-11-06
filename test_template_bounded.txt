@@ -1,0 +1,42 @@
+package main
+
+import (
+    "time"
+
+    "github.com/VKCOM/statshouse-go"
+)
+
+func main() {
+    // Fixture capacity for protocol comparisons, not an application default.
+    budget, err := statshouse.NewMemoryBudget(256 << 20)
+    if err != nil { panic(err) }
+    c, err := statshouse.NewClientWithBudget(statshouse.ConfigureArgs{StatsHouseAddr: "{{ .StatsHouseAddr }}", Network: "tcp"}, budget)
+    if err != nil { panic(err) }
+    defer c.Close()
+    var t statshouse.NamedTags
+    for i := 0; i < {{.NumberOfIterations}}; i++ {
+    {{- range $v := .Metrics }}
+        t = statshouse.NamedTags{
+            {{- range $i, $v := $v.Tags -}}
+                {{ if $i }}, {{ end }}{"{{ index $v 0 }}", "{{ index $v 1 }}"}
+            {{- end -}}
+        }
+        {{- if eq $v.Kind 2 }}
+        c.NamedUniquesHistoric("{{ $v.Name }}", t, []int64{
+            {{- range $i, $v := $v.Uniques -}}
+                {{ if $i }}, {{ end }}{{ $v }}
+            {{- end -}}
+        }, {{ $v.Timestamp }})
+        {{- else if eq $v.Kind 1 }}
+        c.NamedValuesHistoric("{{ $v.Name }}", t, []float64{
+            {{- range $i, $v := $v.Values -}}
+                {{ if $i }}, {{ end }}{{ $v }}
+            {{- end -}}
+        }, {{ $v.Timestamp }})
+        {{- else }}
+        c.NamedCountHistoric("{{ $v.Name }}", t, {{ printf "%.1f" $v.Count }}, {{ $v.Timestamp }})
+        {{- end }}
+        time.Sleep(time.Millisecond)
+    {{- end }}
+    }
+}
